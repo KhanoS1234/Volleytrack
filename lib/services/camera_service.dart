@@ -1,4 +1,5 @@
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'dart:ui' show Rect, Size;
@@ -24,6 +25,8 @@ class CameraService {
   static const int _ocrEveryNFrames = 10;
 
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
+  // New callback — passes skeleton landmarks and confidence to viewmodel
+  Function(List<PoseLandmark> landmarks, double confidence)? onPoseUpdated;
 
   Future<void> initialise() async {
     _cameras = await availableCameras();
@@ -60,8 +63,23 @@ class CameraService {
       if (inputImage == null) return;
 
       final poses = await _poseDetector.processImage(inputImage);
+
       for (final pose in poses) {
         poseAnalyser.addPose(pose);
+
+        // Calculate average confidence across key landmarks
+        final keyPoints = [
+          PoseLandmarkType.leftShoulder,
+          PoseLandmarkType.rightShoulder,
+          PoseLandmarkType.leftHip,
+          PoseLandmarkType.rightHip,
+        ];
+        final avgConfidence = keyPoints
+            .map((t) => pose.landmarks[t]?.likelihood ?? 0.0)
+            .reduce((a, b) => a + b) / keyPoints.length;
+
+        // Send all landmarks to UI for skeleton drawing
+        onPoseUpdated?.call(pose.landmarks.values.toList(), avgConfidence);
       }
 
       if (_frameCount % _ocrEveryNFrames == 0) {

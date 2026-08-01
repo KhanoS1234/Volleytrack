@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../theme.dart';
 import '../models/game_event.dart';
 import '../viewmodels/tracking_viewmodel.dart';
@@ -79,42 +80,65 @@ class _TrackingViewState extends State<TrackingView>
               fit: StackFit.expand,
               children: [
                 _buildCamera(),
-                // Scan line
-                AnimatedBuilder(
-                  animation: _scanController,
-                  builder: (_, __) => Positioned(
-                    top: _scanController.value * MediaQuery.of(context).size.height * 0.65,
-                    left: 0, right: 0,
-                    child: Container(
-                      height: 2,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(colors: [
-                          Colors.transparent,
-                          VTColors.blockCyan.withValues(alpha: 0.6),
-                          Colors.transparent,
-                        ]),
+
+                // Skeleton overlay — drawn under the bounding box
+                if (_vm.skeletonLandmarks.isNotEmpty && _vm.isPlayerLocked)
+                  CustomPaint(
+                    painter: _SkeletonPainter(
+                      landmarks: _vm.skeletonLandmarks,
+                      cameraController: _vm.cameraController,
+                      playerVisible: _vm.playerVisible,
+                    ),
+                  ),
+
+                // Scan line — only show when searching
+                if (!_vm.isPlayerLocked)
+                  AnimatedBuilder(
+                    animation: _scanController,
+                    builder: (_, __) => Positioned(
+                      top: _scanController.value * MediaQuery.of(context).size.height * 0.65,
+                      left: 0, right: 0,
+                      child: Container(
+                        height: 2,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            Colors.transparent,
+                            VTColors.blockCyan.withValues(alpha: 0.6),
+                            Colors.transparent,
+                          ]),
+                        ),
                       ),
                     ),
                   ),
-                ),
+
                 // Corner brackets
                 _corner(top: true,  left: true),
                 _corner(top: true,  left: false),
                 _corner(top: false, left: true),
                 _corner(top: false, left: false),
-                // HUD
+
+                // Player bounding box with status
+                if (_vm.playerBoundingBox != null) _buildPlayerBox(),
+
+                // HUD top bar
                 _buildHUD(),
+
+                // Confidence indicator — only when locked
+                if (_vm.isPlayerLocked) _buildConfidenceBar(),
+
                 // Bottom live stats
                 Positioned(
                   bottom: 0, left: 0, right: 0,
                   child: _buildLiveStats(),
                 ),
-                // Flash
+
+                // Event flash
                 if (_vm.showFlash) _buildFlash(),
               ],
             ),
           ),
-          // Controls — 35% of screen
+
+          // Controls panel — 35% of screen
           Expanded(
             flex: 35,
             child: Container(
@@ -180,6 +204,132 @@ class _TrackingViewState extends State<TrackingView>
     return CameraPreview(_vm.cameraController!);
   }
 
+  Widget _buildPlayerBox() {
+    final box = _vm.playerBoundingBox!;
+    final screenSize = MediaQuery.of(context).size;
+    final viewHeight = screenSize.height * 0.65;
+    final viewWidth  = screenSize.width;
+
+    final scaleX = viewWidth  / (_vm.cameraController?.value.previewSize?.height ?? viewWidth);
+    final scaleY = viewHeight / (_vm.cameraController?.value.previewSize?.width  ?? viewHeight);
+
+    // Box colour: green = locked and visible, orange = locked but lost, cyan = searching
+    final boxColor = _vm.isPlayerLocked
+        ? (_vm.playerVisible ? VTColors.pointGreen : VTColors.spikeGold)
+        : VTColors.blockCyan;
+
+    final statusText = _vm.isPlayerLocked
+        ? (_vm.playerVisible ? '#${widget.jersey} · TRACKING' : '#${widget.jersey} · SEARCHING...')
+        : 'SCANNING FOR #${widget.jersey}';
+
+    return Positioned(
+      left:   (box.left  * scaleX).clamp(0, viewWidth  - 20),
+      top:    (box.top   * scaleY).clamp(0, viewHeight - 20),
+      width:  (box.width * scaleX).clamp(20, viewWidth),
+      height: (box.height * scaleY).clamp(20, viewHeight),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Animated border — pulses when locked
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            decoration: BoxDecoration(
+              border: Border.all(color: boxColor, width: _vm.playerVisible ? 2.5 : 1.5),
+              borderRadius: BorderRadius.circular(4),
+              color: boxColor.withValues(alpha: _vm.playerVisible ? 0.05 : 0.02),
+            ),
+          ),
+          // Label above box
+          Positioned(
+            top: -26, left: -2,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: boxColor,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(4),
+                  topRight: Radius.circular(4),
+                ),
+              ),
+              child: Text(
+                statusText,
+                style: GoogleFonts.jetBrainsMono(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black,
+                ),
+              ),
+            ),
+          ),
+          // Confidence badge bottom right of box
+          if (_vm.isPlayerLocked && _vm.playerVisible)
+            Positioned(
+              bottom: -20, right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: boxColor.withValues(alpha: 0.5)),
+                ),
+                child: Text(
+                  '${(_vm.detectionConfidence * 100).toStringAsFixed(0)}% conf',
+                  style: GoogleFonts.jetBrainsMono(fontSize: 9, color: boxColor),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Confidence bar shown at top right when player is locked
+  Widget _buildConfidenceBar() {
+    final conf = _vm.detectionConfidence;
+    final color = conf > 0.7
+        ? VTColors.pointGreen
+        : conf > 0.4
+            ? VTColors.spikeGold
+            : VTColors.dangerRed;
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 70,
+      right: 16,
+      child: Container(
+        width: 80,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('CONF', style: GoogleFonts.inter(fontSize: 8, color: VTColors.textDim, fontWeight: FontWeight.w600, letterSpacing: 1)),
+            const SizedBox(height: 4),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: conf,
+                backgroundColor: VTColors.surface2,
+                valueColor: AlwaysStoppedAnimation(color),
+                minHeight: 4,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '${(conf * 100).toStringAsFixed(0)}%',
+              style: GoogleFonts.jetBrainsMono(fontSize: 9, color: color),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _corner({required bool top, required bool left}) {
     const size = 20.0;
     return Positioned(
@@ -207,16 +357,23 @@ class _TrackingViewState extends State<TrackingView>
             Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
               Text('TRACKING', style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
               Row(mainAxisSize: MainAxisSize.min, children: [
-                Container(
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
                   width: 6, height: 6,
                   decoration: BoxDecoration(
-                    color: _vm.isPlayerLocked ? VTColors.pointGreen : VTColors.spikeGold,
+                    color: _vm.isPlayerLocked
+                        ? (_vm.playerVisible ? VTColors.pointGreen : VTColors.spikeGold)
+                        : VTColors.dangerRed,
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 4),
-                Text(_vm.isPlayerLocked ? 'Locked on' : 'Searching...',
-                  style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim)),
+                Text(
+                  _vm.isPlayerLocked
+                      ? (_vm.playerVisible ? 'Locked on' : 'Player lost')
+                      : 'Searching...',
+                  style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim),
+                ),
               ]),
             ]),
           ])),
@@ -254,9 +411,9 @@ class _TrackingViewState extends State<TrackingView>
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _liveStat('${_vm.hits}',               'HITS',   VTColors.spikeGold),
-          _liveStat('${_vm.blocks}',             'BLOCKS', VTColors.blockCyan),
-          _liveStat('${_vm.pointPercentage}%',   'PTS %',  VTColors.pointGreen),
+          _liveStat('${_vm.hits}',             'HITS',   VTColors.spikeGold),
+          _liveStat('${_vm.blocks}',           'BLOCKS', VTColors.blockCyan),
+          _liveStat('${_vm.pointPercentage}%', 'PTS %',  VTColors.pointGreen),
         ],
       ),
     );
@@ -315,7 +472,7 @@ class _TrackingViewState extends State<TrackingView>
       ),
       const SizedBox(width: 8),
       Expanded(child: Text(
-        'Auto-detecting hits & blocks via pose analysis. Tap to manually confirm.',
+        'Skeleton overlay active. Green box = locked. Orange = player lost.',
         style: GoogleFonts.inter(fontSize: 11, color: VTColors.textDim),
       )),
     ]),
@@ -347,6 +504,99 @@ class _TrackingViewState extends State<TrackingView>
       ),
     );
 }
+
+// ─── Skeleton Painter ──────────────────────────────────────────────────────
+
+class _SkeletonPainter extends CustomPainter {
+  final List<PoseLandmark> landmarks;
+  final dynamic cameraController;
+  final bool playerVisible;
+
+  _SkeletonPainter({
+    required this.landmarks,
+    required this.cameraController,
+    required this.playerVisible,
+  });
+
+  // Define which joints to connect with lines
+  static const List<List<PoseLandmarkType>> _connections = [
+    // Torso
+    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.rightShoulder],
+    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.leftHip],
+    [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
+    [PoseLandmarkType.leftHip,       PoseLandmarkType.rightHip],
+    // Left arm
+    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.leftElbow],
+    [PoseLandmarkType.leftElbow,     PoseLandmarkType.leftWrist],
+    // Right arm
+    [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
+    [PoseLandmarkType.rightElbow,    PoseLandmarkType.rightWrist],
+    // Left leg
+    [PoseLandmarkType.leftHip,       PoseLandmarkType.leftKnee],
+    [PoseLandmarkType.leftKnee,      PoseLandmarkType.leftAnkle],
+    // Right leg
+    [PoseLandmarkType.rightHip,      PoseLandmarkType.rightKnee],
+    [PoseLandmarkType.rightKnee,     PoseLandmarkType.rightAnkle],
+    // Head
+    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.nose],
+    [PoseLandmarkType.rightShoulder, PoseLandmarkType.nose],
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (landmarks.isEmpty) return;
+
+    final color = playerVisible
+        ? const Color(0xFF00E87A)   // green when locked
+        : const Color(0xFFF5A623);  // gold when searching
+
+    final linePaint = Paint()
+      ..color = color.withValues(alpha: 0.7)
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round;
+
+    final dotPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    // Build a lookup map for fast access
+    final Map<PoseLandmarkType, PoseLandmark> landmarkMap = {
+      for (final l in landmarks) l.type: l
+    };
+
+    // Get camera preview dimensions for scaling
+    final previewW = cameraController?.value.previewSize?.height ?? size.width;
+    final previewH = cameraController?.value.previewSize?.width  ?? size.height;
+
+    Offset toScreen(PoseLandmark l) {
+      final x = (l.x / previewW) * size.width;
+      final y = (l.y / previewH) * size.height;
+      return Offset(x, y);
+    }
+
+    // Draw connecting lines
+    for (final connection in _connections) {
+      final a = landmarkMap[connection[0]];
+      final b = landmarkMap[connection[1]];
+      if (a == null || b == null) continue;
+      if (a.likelihood < 0.4 || b.likelihood < 0.4) continue;
+
+      canvas.drawLine(toScreen(a), toScreen(b), linePaint);
+    }
+
+    // Draw joint dots
+    for (final landmark in landmarks) {
+      if (landmark.likelihood < 0.4) continue;
+      canvas.drawCircle(toScreen(landmark), 4, dotPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SkeletonPainter old) =>
+      old.landmarks != landmarks || old.playerVisible != playerVisible;
+}
+
+// ─── Corner Bracket Painter ────────────────────────────────────────────────
 
 class _CornerPainter extends CustomPainter {
   final bool top, left;

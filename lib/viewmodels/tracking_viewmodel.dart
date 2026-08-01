@@ -1,6 +1,7 @@
 import 'dart:async';
-import 'dart:ui' show Rect;
+import 'dart:ui' show Rect, Offset;
 import 'package:flutter/foundation.dart';
+import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../models/game_event.dart';
 import '../models/session_model.dart';
 import '../services/camera_service.dart';
@@ -20,10 +21,17 @@ class TrackingViewModel extends ChangeNotifier {
   final List<GameEvent> events = [];
 
   bool isPlayerLocked = false;
+  bool playerVisible = false;
   Rect? playerBoundingBox;
   bool showFlash = false;
   EventType? flashType;
 
+  // Skeleton joint positions for overlay
+  List<PoseLandmark> skeletonLandmarks = [];
+  double detectionConfidence = 0.0;
+
+  // Player lost timer — marks player as lost after 2s without detection
+  Timer? _playerLostTimer;
   Timer? _flashTimer;
   Timer? _sessionTimer;
 
@@ -41,7 +49,23 @@ class TrackingViewModel extends ChangeNotifier {
 
     _cameraService.onPlayerDetected = (number, box) {
       isPlayerLocked = true;
+      playerVisible  = true;
       playerBoundingBox = box;
+
+      // Reset lost timer every time player is detected
+      _playerLostTimer?.cancel();
+      _playerLostTimer = Timer(const Duration(seconds: 2), () {
+        playerVisible = false;
+        notifyListeners();
+      });
+
+      notifyListeners();
+    };
+
+    // Pass skeleton data through from camera service
+    _cameraService.onPoseUpdated = (landmarks, confidence) {
+      skeletonLandmarks  = landmarks;
+      detectionConfidence = confidence;
       notifyListeners();
     };
 
@@ -82,6 +106,7 @@ class TrackingViewModel extends ChangeNotifier {
   Future<SessionModel> endSession() async {
     _sessionTimer?.cancel();
     _flashTimer?.cancel();
+    _playerLostTimer?.cancel();
     await _cameraService.stopCamera();
 
     final session = SessionModel(
@@ -108,6 +133,7 @@ class TrackingViewModel extends ChangeNotifier {
   void dispose() {
     _sessionTimer?.cancel();
     _flashTimer?.cancel();
+    _playerLostTimer?.cancel();
     _cameraService.dispose();
     super.dispose();
   }
