@@ -2,7 +2,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'dart:ui' show Rect, Size;
+import 'dart:ui' show Rect, Size, Offset;
 import 'pose_analyser.dart';
 
 /// Tracks multiple players simultaneously
