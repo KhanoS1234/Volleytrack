@@ -4,20 +4,14 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../theme.dart';
 import '../models/game_event.dart';
+import '../models/player_config.dart';
 import '../viewmodels/tracking_viewmodel.dart';
-import 'stats_view.dart';
+import 'multi_stats_view.dart';
 
 class TrackingView extends StatefulWidget {
-  final String jersey;
-  final String playerName;
-  final Color jerseyColor;
+  final List<PlayerConfig> players;
 
-  const TrackingView({
-    super.key,
-    required this.jersey,
-    required this.playerName,
-    required this.jerseyColor,
-  });
+  const TrackingView({super.key, required this.players});
 
   @override
   State<TrackingView> createState() => _TrackingViewState();
@@ -33,7 +27,7 @@ class _TrackingViewState extends State<TrackingView>
   @override
   void initState() {
     super.initState();
-    _vm = TrackingViewModel(jersey: widget.jersey, playerName: widget.playerName);
+    _vm = TrackingViewModel(players: widget.players);
     _scanController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
@@ -52,11 +46,14 @@ class _TrackingViewState extends State<TrackingView>
   }
 
   Future<void> _endSession() async {
-    final session = await _vm.endSession();
+    final results = await _vm.endSession();
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => StatsView(session: session)),
+      MaterialPageRoute(builder: (_) => MultiStatsView(
+        playerStats: results,
+        players: widget.players,
+      )),
     );
   }
 
@@ -73,41 +70,41 @@ class _TrackingViewState extends State<TrackingView>
       backgroundColor: Colors.black,
       body: Column(
         children: [
-          // Camera — 65% of screen
+          // Camera — 60% of screen
           Expanded(
-            flex: 65,
+            flex: 60,
             child: Stack(
               fit: StackFit.expand,
               children: [
                 _buildCamera(),
 
-                // Skeleton overlay — drawn under the bounding box
-                if (_vm.skeletonLandmarks.isNotEmpty && _vm.isPlayerLocked)
-                  CustomPaint(
+                // Skeleton overlays for all players
+                ...widget.players.map((p) {
+                  final landmarks = _vm.skeletons[p.jersey] ?? [];
+                  if (landmarks.isEmpty) return const SizedBox.shrink();
+                  return CustomPaint(
                     painter: _SkeletonPainter(
-                      landmarks: _vm.skeletonLandmarks,
+                      landmarks: landmarks,
+                      color: p.color,
                       cameraController: _vm.cameraController,
-                      playerVisible: _vm.playerVisible,
+                      visible: _vm.playerVisible[p.jersey] ?? false,
                     ),
-                  ),
+                  );
+                }),
 
-                // Scan line — only show when searching
-                if (!_vm.isPlayerLocked)
+                // Scan line when searching
+                if (!widget.players.any((p) => _vm.playerLocked[p.jersey] == true))
                   AnimatedBuilder(
                     animation: _scanController,
                     builder: (_, __) => Positioned(
-                      top: _scanController.value * MediaQuery.of(context).size.height * 0.65,
+                      top: _scanController.value * MediaQuery.of(context).size.height * 0.60,
                       left: 0, right: 0,
-                      child: Container(
-                        height: 2,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(colors: [
-                            Colors.transparent,
-                            VTColors.blockCyan.withValues(alpha: 0.6),
-                            Colors.transparent,
-                          ]),
-                        ),
-                      ),
+                      child: Container(height: 2,
+                        decoration: BoxDecoration(gradient: LinearGradient(colors: [
+                          Colors.transparent,
+                          VTColors.blockCyan.withValues(alpha: 0.6),
+                          Colors.transparent,
+                        ]))),
                     ),
                   ),
 
@@ -117,20 +114,11 @@ class _TrackingViewState extends State<TrackingView>
                 _corner(top: false, left: true),
                 _corner(top: false, left: false),
 
-                // Player bounding box with status
-                if (_vm.playerBoundingBox != null) _buildPlayerBox(),
+                // Bounding boxes for all players
+                ...widget.players.map((p) => _buildPlayerBox(p)),
 
                 // HUD top bar
                 _buildHUD(),
-
-                // Confidence indicator — only when locked
-                if (_vm.isPlayerLocked) _buildConfidenceBar(),
-
-                // Bottom live stats
-                Positioned(
-                  bottom: 0, left: 0, right: 0,
-                  child: _buildLiveStats(),
-                ),
 
                 // Event flash
                 if (_vm.showFlash) _buildFlash(),
@@ -138,29 +126,92 @@ class _TrackingViewState extends State<TrackingView>
             ),
           ),
 
-          // Controls panel — 35% of screen
+          // Player cards + controls — 40% of screen
           Expanded(
-            flex: 35,
+            flex: 40,
             child: Container(
               color: VTColors.courtBlue,
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
               child: Column(
                 children: [
-                  _buildAINote(),
-                  const SizedBox(height: 12),
-                  _buildManualButtons(),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton(
-                      onPressed: _endSession,
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: VTColors.dangerRed, width: 1.5),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  // Player stat cards — side by side
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                      child: Row(
+                        children: widget.players.asMap().entries.map((entry) {
+                          final i = entry.key;
+                          final p = entry.value;
+                          return Expanded(
+                            child: GestureDetector(
+                              onTap: () => _vm.selectPlayer(i),
+                              child: _PlayerCard(
+                                player: p,
+                                stats: _vm.stats[p.jersey]!,
+                                isSelected: _vm.selectedPlayerIndex == i,
+                                isLocked: _vm.playerLocked[p.jersey] ?? false,
+                                isVisible: _vm.playerVisible[p.jersey] ?? false,
+                              ),
+                            ),
+                          );
+                        }).toList(),
                       ),
-                      child: Text('END SESSION',
-                        style: GoogleFonts.bebasNeue(fontSize: 18, letterSpacing: 2, color: VTColors.dangerRed)),
+                    ),
+                  ),
+
+                  // Manual log buttons for selected player
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                    child: Column(
+                      children: [
+                        // Selected player indicator
+                        Row(
+                          children: [
+                            Container(
+                              width: 8, height: 8,
+                              decoration: BoxDecoration(
+                                color: _vm.selectedPlayer.color,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'LOGGING FOR #${_vm.selectedPlayer.jersey}',
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 1,
+                                color: VTColors.textDim,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(children: [
+                          Expanded(child: _manualBtn('💥', 'HIT',   VTColors.spikeGold,  () => _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.hit))),
+                          const SizedBox(width: 8),
+                          Expanded(child: _manualBtn('🤚', 'BLOCK', VTColors.blockCyan,  () => _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.block))),
+                          const SizedBox(width: 8),
+                          Expanded(child: _manualBtn('✅', 'POINT', VTColors.pointGreen, () => _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.point))),
+                        ]),
+                      ],
+                    ),
+                  ),
+
+                  // End session
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: _endSession,
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: VTColors.dangerRed, width: 1.5),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        child: Text('END SESSION',
+                          style: GoogleFonts.bebasNeue(fontSize: 16, letterSpacing: 2, color: VTColors.dangerRed)),
+                      ),
                     ),
                   ),
                 ],
@@ -174,172 +225,66 @@ class _TrackingViewState extends State<TrackingView>
 
   Widget _buildCamera() {
     if (_isInitialising) {
-      return Container(
-        color: VTColors.courtBlue,
-        child: Center(child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(color: VTColors.blockCyan),
-            const SizedBox(height: 16),
-            Text('Starting camera...', style: GoogleFonts.inter(color: VTColors.textDim)),
-          ],
-        )),
-      );
+      return Container(color: VTColors.courtBlue,
+        child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(color: VTColors.blockCyan),
+          const SizedBox(height: 16),
+          Text('Starting camera...', style: GoogleFonts.inter(color: VTColors.textDim)),
+        ])));
     }
     if (_error != null || _vm.cameraController == null || !_vm.cameraController!.value.isInitialized) {
-      return Container(
-        color: VTColors.courtBlue,
-        child: Center(child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.camera_alt_outlined, color: VTColors.textDim, size: 48),
-            const SizedBox(height: 16),
-            Text('Camera unavailable\nUse manual buttons below',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(color: VTColors.textDim)),
-          ],
-        )),
-      );
+      return Container(color: VTColors.courtBlue,
+        child: Center(child: Text('Camera unavailable\nUse manual buttons below',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.inter(color: VTColors.textDim))));
     }
     return CameraPreview(_vm.cameraController!);
   }
 
-  Widget _buildPlayerBox() {
-    final box = _vm.playerBoundingBox!;
+  Widget _buildPlayerBox(PlayerConfig p) {
+    final box = _vm.playerBoxes[p.jersey];
+    if (box == null) return const SizedBox.shrink();
+
     final screenSize = MediaQuery.of(context).size;
-    final viewHeight = screenSize.height * 0.65;
+    final viewHeight = screenSize.height * 0.60;
     final viewWidth  = screenSize.width;
 
     final scaleX = viewWidth  / (_vm.cameraController?.value.previewSize?.height ?? viewWidth);
     final scaleY = viewHeight / (_vm.cameraController?.value.previewSize?.width  ?? viewHeight);
 
-    // Box colour: green = locked and visible, orange = locked but lost, cyan = searching
-    final boxColor = _vm.isPlayerLocked
-        ? (_vm.playerVisible ? VTColors.pointGreen : VTColors.spikeGold)
-        : VTColors.blockCyan;
-
-    final statusText = _vm.isPlayerLocked
-        ? (_vm.playerVisible ? '#${widget.jersey} · TRACKING' : '#${widget.jersey} · SEARCHING...')
-        : 'SCANNING FOR #${widget.jersey}';
+    final visible = _vm.playerVisible[p.jersey] ?? false;
+    final color   = visible ? p.color : VTColors.spikeGold;
 
     return Positioned(
       left:   (box.left  * scaleX).clamp(0, viewWidth  - 20),
       top:    (box.top   * scaleY).clamp(0, viewHeight - 20),
       width:  (box.width * scaleX).clamp(20, viewWidth),
       height: (box.height * scaleY).clamp(20, viewHeight),
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          // Animated border — pulses when locked
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
+      child: Stack(clipBehavior: Clip.none, children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          decoration: BoxDecoration(
+            border: Border.all(color: color, width: 2),
+            borderRadius: BorderRadius.circular(4),
+            color: color.withValues(alpha: 0.05),
+          ),
+        ),
+        Positioned(
+          top: -22, left: -2,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
-              border: Border.all(color: boxColor, width: _vm.playerVisible ? 2.5 : 1.5),
-              borderRadius: BorderRadius.circular(4),
-              color: boxColor.withValues(alpha: _vm.playerVisible ? 0.05 : 0.02),
+              color: color,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(4), topRight: Radius.circular(4)),
+            ),
+            child: Text(
+              '#${p.jersey} · ${visible ? "ON" : "LOST"}',
+              style: GoogleFonts.jetBrainsMono(fontSize: 9, fontWeight: FontWeight.w600, color: Colors.black),
             ),
           ),
-          // Label above box
-          Positioned(
-            top: -26, left: -2,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: boxColor,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(4),
-                  topRight: Radius.circular(4),
-                ),
-              ),
-              child: Text(
-                statusText,
-                style: GoogleFonts.jetBrainsMono(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black,
-                ),
-              ),
-            ),
-          ),
-          // Confidence badge bottom right of box
-          if (_vm.isPlayerLocked && _vm.playerVisible)
-            Positioned(
-              bottom: -20, right: 0,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.7),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: boxColor.withValues(alpha: 0.5)),
-                ),
-                child: Text(
-                  '${(_vm.detectionConfidence * 100).toStringAsFixed(0)}% conf',
-                  style: GoogleFonts.jetBrainsMono(fontSize: 9, color: boxColor),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  // Confidence bar shown at top right when player is locked
-  Widget _buildConfidenceBar() {
-    final conf = _vm.detectionConfidence;
-    final color = conf > 0.7
-        ? VTColors.pointGreen
-        : conf > 0.4
-            ? VTColors.spikeGold
-            : VTColors.dangerRed;
-
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 70,
-      right: 16,
-      child: Container(
-        width: 80,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withValues(alpha: 0.4)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('CONF', style: GoogleFonts.inter(fontSize: 8, color: VTColors.textDim, fontWeight: FontWeight.w600, letterSpacing: 1)),
-            const SizedBox(height: 4),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(2),
-              child: LinearProgressIndicator(
-                value: conf,
-                backgroundColor: VTColors.surface2,
-                valueColor: AlwaysStoppedAnimation(color),
-                minHeight: 4,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              '${(conf * 100).toStringAsFixed(0)}%',
-              style: GoogleFonts.jetBrainsMono(fontSize: 9, color: color),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _corner({required bool top, required bool left}) {
-    const size = 20.0;
-    return Positioned(
-      top:    top  ? 10 : null,
-      bottom: top  ? null : 10,
-      left:   left ? 10 : null,
-      right:  left ? null : 10,
-      child: SizedBox(width: size, height: size,
-        child: CustomPaint(painter: _CornerPainter(top: top, left: left)),
-      ),
+      ]),
     );
   }
 
@@ -350,194 +295,230 @@ class _TrackingViewState extends State<TrackingView>
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _glass(Row(mainAxisSize: MainAxisSize.min, children: [
-            Text('#${widget.jersey}',
-              style: GoogleFonts.bebasNeue(fontSize: 22, color: VTColors.spikeGold, height: 1)),
-            const SizedBox(width: 8),
-            Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text('TRACKING', style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
+          // Player lock indicators
+          Row(
+            children: widget.players.map((p) => Container(
+              margin: const EdgeInsets.only(right: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: p.color.withValues(alpha: 0.4)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Container(
                   width: 6, height: 6,
                   decoration: BoxDecoration(
-                    color: _vm.isPlayerLocked
-                        ? (_vm.playerVisible ? VTColors.pointGreen : VTColors.spikeGold)
+                    color: (_vm.playerLocked[p.jersey] ?? false)
+                        ? ((_vm.playerVisible[p.jersey] ?? false) ? p.color : VTColors.spikeGold)
                         : VTColors.dangerRed,
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 4),
-                Text(
-                  _vm.isPlayerLocked
-                      ? (_vm.playerVisible ? 'Locked on' : 'Player lost')
-                      : 'Searching...',
-                  style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim),
-                ),
+                Text('#${p.jersey}',
+                  style: GoogleFonts.bebasNeue(fontSize: 14, color: p.color, height: 1)),
               ]),
+            )).toList(),
+          ),
+
+          // Timer
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.2)),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(width: 6, height: 6,
+                decoration: const BoxDecoration(color: VTColors.dangerRed, shape: BoxShape.circle)),
+              const SizedBox(width: 5),
+              Text(_vm.formattedTime,
+                style: GoogleFonts.jetBrainsMono(fontSize: 13, color: VTColors.netWhite)),
             ]),
-          ])),
-          _glass(Row(mainAxisSize: MainAxisSize.min, children: [
-            Container(width: 7, height: 7,
-              decoration: const BoxDecoration(color: VTColors.dangerRed, shape: BoxShape.circle)),
-            const SizedBox(width: 6),
-            Text(_vm.formattedTime,
-              style: GoogleFonts.jetBrainsMono(fontSize: 14, color: VTColors.netWhite)),
-          ])),
+          ),
         ],
       ),
     );
   }
-
-  Widget _glass(Widget child) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-    decoration: BoxDecoration(
-      color: Colors.black.withValues(alpha: 0.55),
-      borderRadius: BorderRadius.circular(10),
-      border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.2)),
-    ),
-    child: child,
-  );
-
-  Widget _buildLiveStats() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.bottomCenter, end: Alignment.topCenter,
-          colors: [Colors.black.withValues(alpha: 0.9), Colors.transparent],
-        ),
-      ),
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 14),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _liveStat('${_vm.hits}',             'HITS',   VTColors.spikeGold),
-          _liveStat('${_vm.blocks}',           'BLOCKS', VTColors.blockCyan),
-          _liveStat('${_vm.pointPercentage}%', 'PTS %',  VTColors.pointGreen),
-        ],
-      ),
-    );
-  }
-
-  Widget _liveStat(String val, String lbl, Color color) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Text(val, style: GoogleFonts.bebasNeue(fontSize: 28, color: color, height: 1)),
-      const SizedBox(height: 2),
-      Text(lbl, style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, letterSpacing: 1, color: VTColors.textDim)),
-    ],
-  );
 
   Widget _buildFlash() {
-    final type = _vm.flashType;
-    if (type == null) return const SizedBox.shrink();
+    final type    = _vm.flashType;
+    final jersey  = _vm.flashJersey;
+    if (type == null || jersey == null) return const SizedBox.shrink();
+
+    final player = widget.players.firstWhere(
+      (p) => p.jersey == jersey,
+      orElse: () => widget.players.first,
+    );
+
     final styles = {
       EventType.hit:   {'label': '💥 HIT',   'color': VTColors.spikeGold},
       EventType.block: {'label': '🤚 BLOCK', 'color': VTColors.blockCyan},
       EventType.point: {'label': '✅ POINT', 'color': VTColors.pointGreen},
     };
-    final count = type == EventType.hit ? _vm.hits : type == EventType.block ? _vm.blocks : _vm.points;
+
     final color = styles[type]!['color'] as Color;
+
     return Center(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.7),
-          borderRadius: BorderRadius.circular(16),
+          color: Colors.black.withValues(alpha: 0.75),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: color.withValues(alpha: 0.5)),
-          boxShadow: [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 20)],
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('#$jersey ${player.name}',
+            style: GoogleFonts.inter(fontSize: 11, color: player.color, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 2),
           Text(styles[type]!['label'] as String,
-            style: GoogleFonts.bebasNeue(fontSize: 36, letterSpacing: 3, color: color, height: 1)),
-          const SizedBox(height: 4),
-          Text('× $count', style: GoogleFonts.jetBrainsMono(fontSize: 13, color: VTColors.textDim)),
+            style: GoogleFonts.bebasNeue(fontSize: 32, letterSpacing: 3, color: color, height: 1)),
         ]),
       ),
     );
   }
 
-  Widget _buildAINote() => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-    decoration: BoxDecoration(
-      color: VTColors.surface,
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.15)),
-    ),
-    child: Row(children: [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(color: VTColors.blockCyan, borderRadius: BorderRadius.circular(4)),
-        child: Text('AI', style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 1, color: Colors.black)),
-      ),
-      const SizedBox(width: 8),
-      Expanded(child: Text(
-        'Skeleton overlay active. Green box = locked. Orange = player lost.',
-        style: GoogleFonts.inter(fontSize: 11, color: VTColors.textDim),
-      )),
-    ]),
-  );
-
-  Widget _buildManualButtons() => Row(children: [
-    Expanded(child: _manualBtn('💥', 'HIT',   VTColors.spikeGold,  () => _vm.recordEvent(EventType.hit))),
-    const SizedBox(width: 8),
-    Expanded(child: _manualBtn('🤚', 'BLOCK', VTColors.blockCyan,  () => _vm.recordEvent(EventType.block))),
-    const SizedBox(width: 8),
-    Expanded(child: _manualBtn('✅', 'POINT', VTColors.pointGreen, () => _vm.recordEvent(EventType.point))),
-  ]);
+  Widget _corner({required bool top, required bool left}) {
+    const size = 20.0;
+    return Positioned(
+      top:    top  ? 10 : null, bottom: top  ? null : 10,
+      left:   left ? 10 : null, right:  left ? null : 10,
+      child: SizedBox(width: size, height: size,
+        child: CustomPaint(painter: _CornerPainter(top: top, left: left))),
+    );
+  }
 
   Widget _manualBtn(String emoji, String label, Color color, VoidCallback onTap) =>
     GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
+        padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
           color: VTColors.surface,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.15), width: 1.5),
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(emoji, style: const TextStyle(fontSize: 22)),
-          const SizedBox(height: 4),
-          Text(label, style: GoogleFonts.bebasNeue(fontSize: 14, letterSpacing: 1, color: VTColors.textDim)),
+          Text(emoji, style: const TextStyle(fontSize: 20)),
+          const SizedBox(height: 2),
+          Text(label, style: GoogleFonts.bebasNeue(fontSize: 12, letterSpacing: 1, color: VTColors.textDim)),
         ]),
       ),
     );
+}
+
+// ─── Player Stat Card ──────────────────────────────────────────────────────
+
+class _PlayerCard extends StatelessWidget {
+  final PlayerConfig player;
+  final PlayerStats stats;
+  final bool isSelected;
+  final bool isLocked;
+  final bool isVisible;
+
+  const _PlayerCard({
+    required this.player,
+    required this.stats,
+    required this.isSelected,
+    required this.isLocked,
+    required this.isVisible,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      margin: const EdgeInsets.symmetric(horizontal: 3),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: isSelected
+            ? player.color.withValues(alpha: 0.12)
+            : VTColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isSelected ? player.color : player.color.withValues(alpha: 0.3),
+          width: isSelected ? 2 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // Jersey + status
+          Row(children: [
+            Text('#${player.jersey}',
+              style: GoogleFonts.bebasNeue(fontSize: 20, color: player.color, height: 1)),
+            const Spacer(),
+            Container(
+              width: 6, height: 6,
+              decoration: BoxDecoration(
+                color: isLocked
+                    ? (isVisible ? player.color : VTColors.spikeGold)
+                    : VTColors.dangerRed,
+                shape: BoxShape.circle,
+              ),
+            ),
+          ]),
+
+          // Name
+          Text(
+            stats.name,
+            style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+
+          const Divider(color: VTColors.surface2, height: 8),
+
+          // Stats
+          _statRow('HIT', '${stats.hits}',   VTColors.spikeGold),
+          _statRow('BLK', '${stats.blocks}', VTColors.blockCyan),
+          _statRow('PT%', '${stats.pointPercentage}%', VTColors.pointGreen),
+        ],
+      ),
+    );
+  }
+
+  Widget _statRow(String label, String value, Color color) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 1),
+    child: Row(children: [
+      Text(label, style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim, fontWeight: FontWeight.w600)),
+      const Spacer(),
+      Text(value, style: GoogleFonts.bebasNeue(fontSize: 14, color: color, height: 1)),
+    ]),
+  );
 }
 
 // ─── Skeleton Painter ──────────────────────────────────────────────────────
 
 class _SkeletonPainter extends CustomPainter {
   final List<PoseLandmark> landmarks;
+  final Color color;
   final dynamic cameraController;
-  final bool playerVisible;
+  final bool visible;
 
   _SkeletonPainter({
     required this.landmarks,
+    required this.color,
     required this.cameraController,
-    required this.playerVisible,
+    required this.visible,
   });
 
-  // Define which joints to connect with lines
   static const List<List<PoseLandmarkType>> _connections = [
-    // Torso
     [PoseLandmarkType.leftShoulder,  PoseLandmarkType.rightShoulder],
     [PoseLandmarkType.leftShoulder,  PoseLandmarkType.leftHip],
     [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
     [PoseLandmarkType.leftHip,       PoseLandmarkType.rightHip],
-    // Left arm
     [PoseLandmarkType.leftShoulder,  PoseLandmarkType.leftElbow],
     [PoseLandmarkType.leftElbow,     PoseLandmarkType.leftWrist],
-    // Right arm
     [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
     [PoseLandmarkType.rightElbow,    PoseLandmarkType.rightWrist],
-    // Left leg
     [PoseLandmarkType.leftHip,       PoseLandmarkType.leftKnee],
     [PoseLandmarkType.leftKnee,      PoseLandmarkType.leftAnkle],
-    // Right leg
     [PoseLandmarkType.rightHip,      PoseLandmarkType.rightKnee],
     [PoseLandmarkType.rightKnee,     PoseLandmarkType.rightAnkle],
-    // Head
     [PoseLandmarkType.leftShoulder,  PoseLandmarkType.nose],
     [PoseLandmarkType.rightShoulder, PoseLandmarkType.nose],
   ];
@@ -546,57 +527,47 @@ class _SkeletonPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (landmarks.isEmpty) return;
 
-    final color = playerVisible
-        ? const Color(0xFF00E87A)   // green when locked
-        : const Color(0xFFF5A623);  // gold when searching
+    final drawColor = visible ? color : color.withValues(alpha: 0.3);
 
     final linePaint = Paint()
-      ..color = color.withValues(alpha: 0.7)
+      ..color = drawColor.withValues(alpha: 0.7)
       ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
 
     final dotPaint = Paint()
-      ..color = color
+      ..color = drawColor
       ..style = PaintingStyle.fill;
 
-    // Build a lookup map for fast access
     final Map<PoseLandmarkType, PoseLandmark> landmarkMap = {
       for (final l in landmarks) l.type: l
     };
 
-    // Get camera preview dimensions for scaling
     final previewW = cameraController?.value.previewSize?.height ?? size.width;
     final previewH = cameraController?.value.previewSize?.width  ?? size.height;
 
-    Offset toScreen(PoseLandmark l) {
-      final x = (l.x / previewW) * size.width;
-      final y = (l.y / previewH) * size.height;
-      return Offset(x, y);
-    }
+    Offset toScreen(PoseLandmark l) => Offset(
+      (l.x / previewW) * size.width,
+      (l.y / previewH) * size.height,
+    );
 
-    // Draw connecting lines
-    for (final connection in _connections) {
-      final a = landmarkMap[connection[0]];
-      final b = landmarkMap[connection[1]];
+    for (final conn in _connections) {
+      final a = landmarkMap[conn[0]];
+      final b = landmarkMap[conn[1]];
       if (a == null || b == null) continue;
       if (a.likelihood < 0.4 || b.likelihood < 0.4) continue;
-
       canvas.drawLine(toScreen(a), toScreen(b), linePaint);
     }
 
-    // Draw joint dots
-    for (final landmark in landmarks) {
-      if (landmark.likelihood < 0.4) continue;
-      canvas.drawCircle(toScreen(landmark), 4, dotPaint);
+    for (final l in landmarks) {
+      if (l.likelihood < 0.4) continue;
+      canvas.drawCircle(toScreen(l), 3.5, dotPaint);
     }
   }
 
   @override
   bool shouldRepaint(_SkeletonPainter old) =>
-      old.landmarks != landmarks || old.playerVisible != playerVisible;
+      old.landmarks != landmarks || old.visible != visible;
 }
-
-// ─── Corner Bracket Painter ────────────────────────────────────────────────
 
 class _CornerPainter extends CustomPainter {
   final bool top, left;
@@ -610,13 +581,10 @@ class _CornerPainter extends CustomPainter {
       ..strokeCap = StrokeCap.square
       ..style = PaintingStyle.stroke;
 
-    final x  = left ? 0.0 : size.width;
-    final y  = top  ? 0.0 : size.height;
-    final dx = left ? size.width  : -size.width;
-    final dy = top  ? size.height : -size.height;
-
-    canvas.drawLine(Offset(x, y), Offset(x + dx, y), paint);
-    canvas.drawLine(Offset(x, y), Offset(x, y + dy), paint);
+    final x = left ? 0.0 : size.width;
+    final y = top  ? 0.0 : size.height;
+    canvas.drawLine(Offset(x, y), Offset(x + (left ? size.width : -size.width), y), paint);
+    canvas.drawLine(Offset(x, y), Offset(x, y + (top ? size.height : -size.height)), paint);
   }
 
   @override

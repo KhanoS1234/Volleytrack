@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme.dart';
+import '../models/player_config.dart';
 import 'tracking_view.dart';
 
 class SetupView extends StatefulWidget {
@@ -11,46 +12,63 @@ class SetupView extends StatefulWidget {
 }
 
 class _SetupViewState extends State<SetupView> {
-  final _jerseyController = TextEditingController();
-  final _nameController   = TextEditingController();
-  Color _selectedColor    = VTColors.netWhite;
-
-  final List<Color> _jerseyColors = [
-    VTColors.netWhite,
-    VTColors.spikeGold,
-    VTColors.dangerRed,
-    VTColors.blockCyan,
-    VTColors.pointGreen,
-    const Color(0xFF5352ED),
-    const Color(0xFF2F3542),
+  // Up to 3 players
+  final List<TextEditingController> _jerseyControllers = [
+    TextEditingController(),
+    TextEditingController(),
+    TextEditingController(),
+  ];
+  final List<TextEditingController> _nameControllers = [
+    TextEditingController(),
+    TextEditingController(),
+    TextEditingController(),
   ];
 
+  int _activePlayerCount = 1;
+
   void _startSession() {
-    final jersey = _jerseyController.text.trim();
-    if (jersey.isEmpty) {
+    // Validate at least 1 jersey
+    final jersey1 = _jerseyControllers[0].text.trim();
+    if (jersey1.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a jersey number first')),
+        const SnackBar(content: Text('Enter at least one jersey number')),
       );
       return;
     }
+
+    // Build player list for active slots only
+    final List<PlayerConfig> players = [];
+    for (int i = 0; i < _activePlayerCount; i++) {
+      final jersey = _jerseyControllers[i].text.trim();
+      if (jersey.isEmpty) continue;
+      players.add(PlayerConfig(
+        jersey: jersey,
+        name: _nameControllers[i].text.trim().isEmpty
+            ? 'Player #$jersey'
+            : _nameControllers[i].text.trim(),
+        color: PlayerColors.palette[i],
+      ));
+    }
+
+    if (players.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter at least one jersey number')),
+      );
+      return;
+    }
+
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => TrackingView(
-          jersey: jersey,
-          playerName: _nameController.text.trim().isEmpty
-              ? 'Player #$jersey'
-              : _nameController.text.trim(),
-          jerseyColor: _selectedColor,
-        ),
+        builder: (_) => TrackingView(players: players),
       ),
     );
   }
 
   @override
   void dispose() {
-    _jerseyController.dispose();
-    _nameController.dispose();
+    for (final c in _jerseyControllers) c.dispose();
+    for (final c in _nameControllers) c.dispose();
     super.dispose();
   }
 
@@ -83,81 +101,68 @@ class _SetupViewState extends State<SetupView> {
                     ])),
                   ]),
 
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 32),
 
-                  // Headline
                   RichText(text: TextSpan(children: [
-                    TextSpan(text: 'TRACK\nEVERY\n', style: GoogleFonts.bebasNeue(fontSize: 58, color: VTColors.netWhite, height: 0.95)),
-                    TextSpan(text: 'SPIKE.',         style: GoogleFonts.bebasNeue(fontSize: 58, color: VTColors.spikeGold, height: 0.95)),
+                    TextSpan(text: 'TRACK\nUP TO\n', style: GoogleFonts.bebasNeue(fontSize: 52, color: VTColors.netWhite, height: 0.95)),
+                    TextSpan(text: '3 PLAYERS.', style: GoogleFonts.bebasNeue(fontSize: 52, color: VTColors.spikeGold, height: 0.95)),
                   ])),
-                  const SizedBox(height: 10),
+
+                  const SizedBox(height: 8),
                   Text(
-                    'AI-powered player tracking.\nPoint the camera at the court and let it work.',
+                    'Add 1–3 players below then start tracking.',
                     style: GoogleFonts.inter(fontSize: 13, color: VTColors.textDim, height: 1.6),
                   ),
 
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 32),
 
-                  // Jersey number
-                  _Label('Jersey Number'),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _jerseyController,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.digitsOnly,
-                      LengthLimitingTextInputFormatter(2),
-                    ],
-                    style: GoogleFonts.bebasNeue(fontSize: 32, color: VTColors.netWhite, letterSpacing: 3),
-                    decoration: InputDecoration(
-                      prefixText: '#  ',
-                      prefixStyle: GoogleFonts.bebasNeue(fontSize: 32, color: VTColors.spikeGold),
-                      hintText: '07',
-                      hintStyle: GoogleFonts.bebasNeue(fontSize: 32, color: VTColors.muted, letterSpacing: 3),
+                  // Player slots
+                  for (int i = 0; i < _activePlayerCount; i++) ...[
+                    _PlayerSlot(
+                      index: i,
+                      jerseyController: _jerseyControllers[i],
+                      nameController: _nameControllers[i],
+                      color: PlayerColors.palette[i],
+                      onRemove: i > 0 ? () => setState(() => _activePlayerCount--) : null,
                     ),
-                  ),
+                    const SizedBox(height: 16),
+                  ],
 
-                  const SizedBox(height: 20),
-
-                  // Player name
-                  _Label('Player Name (optional)'),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _nameController,
-                    style: GoogleFonts.inter(fontSize: 15, color: VTColors.netWhite),
-                    decoration: InputDecoration(
-                      hintText: 'e.g. Jamie Rodriguez',
-                      hintStyle: GoogleFonts.inter(fontSize: 15, color: VTColors.muted),
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // Colour picker
-                  _Label('Jersey Colour'),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    children: _jerseyColors.map((color) => GestureDetector(
-                      onTap: () => setState(() => _selectedColor = color),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        width: 40, height: 40,
+                  // Add player button — max 3
+                  if (_activePlayerCount < 3)
+                    GestureDetector(
+                      onTap: () => setState(() => _activePlayerCount++),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                         decoration: BoxDecoration(
-                          color: color,
-                          borderRadius: BorderRadius.circular(10),
+                          color: VTColors.surface,
+                          borderRadius: BorderRadius.circular(14),
                           border: Border.all(
-                            color: _selectedColor == color ? Colors.white : Colors.transparent,
-                            width: 2.5,
+                            color: VTColors.blockCyan.withValues(alpha: 0.3),
+                            width: 1.5,
                           ),
                         ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.add, color: VTColors.blockCyan, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'ADD PLAYER ${_activePlayerCount + 1}',
+                              style: GoogleFonts.bebasNeue(
+                                fontSize: 16,
+                                letterSpacing: 2,
+                                color: VTColors.blockCyan,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    )).toList(),
-                  ),
+                    ),
 
-                  const SizedBox(height: 48),
+                  const SizedBox(height: 32),
 
-                  // Start button
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
@@ -173,6 +178,7 @@ class _SetupViewState extends State<SetupView> {
                         style: GoogleFonts.bebasNeue(fontSize: 22, letterSpacing: 2, color: Colors.black)),
                     ),
                   ),
+
                   const SizedBox(height: 32),
                 ],
               ),
@@ -184,14 +190,95 @@ class _SetupViewState extends State<SetupView> {
   }
 }
 
-class _Label extends StatelessWidget {
-  final String text;
-  const _Label(this.text);
+class _PlayerSlot extends StatelessWidget {
+  final int index;
+  final TextEditingController jerseyController;
+  final TextEditingController nameController;
+  final Color color;
+  final VoidCallback? onRemove;
+
+  const _PlayerSlot({
+    required this.index,
+    required this.jerseyController,
+    required this.nameController,
+    required this.color,
+    this.onRemove,
+  });
+
   @override
-  Widget build(BuildContext context) => Text(
-    text.toUpperCase(),
-    style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1.5, color: VTColors.blockCyan),
-  );
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: VTColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: 0.4), width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row
+          Row(
+            children: [
+              Container(
+                width: 12, height: 12,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                PlayerColors.labels[index].toUpperCase(),
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1.5,
+                  color: color,
+                ),
+              ),
+              const Spacer(),
+              if (onRemove != null)
+                GestureDetector(
+                  onTap: onRemove,
+                  child: const Icon(Icons.close, color: VTColors.textDim, size: 18),
+                ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // Jersey number
+          TextField(
+            controller: jerseyController,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(2),
+            ],
+            style: GoogleFonts.bebasNeue(fontSize: 28, color: VTColors.netWhite, letterSpacing: 3),
+            decoration: InputDecoration(
+              prefixText: '#  ',
+              prefixStyle: GoogleFonts.bebasNeue(fontSize: 28, color: color),
+              hintText: '07',
+              hintStyle: GoogleFonts.bebasNeue(fontSize: 28, color: VTColors.muted, letterSpacing: 3),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Player name
+          TextField(
+            controller: nameController,
+            style: GoogleFonts.inter(fontSize: 14, color: VTColors.netWhite),
+            decoration: InputDecoration(
+              hintText: 'Player name (optional)',
+              hintStyle: GoogleFonts.inter(fontSize: 14, color: VTColors.muted),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _GridPainter extends CustomPainter {

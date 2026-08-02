@@ -3,73 +3,92 @@ import 'dart:ui' show Rect, Offset;
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../models/game_event.dart';
-import '../models/session_model.dart';
+import '../models/player_config.dart';
 import '../services/camera_service.dart';
 import '../services/database_service.dart';
 
 class TrackingViewModel extends ChangeNotifier {
-  final String jersey;
-  final String playerName;
+  final List<PlayerConfig> players;
 
   final CameraService _cameraService = CameraService();
   final DatabaseService _db = DatabaseService();
 
-  int hits = 0;
-  int blocks = 0;
-  int points = 0;
-  int timerSeconds = 0;
-  final List<GameEvent> events = [];
+  // Per-player stats
+  final Map<String, PlayerStats> stats = {};
 
-  bool isPlayerLocked = false;
-  bool playerVisible = false;
-  Rect? playerBoundingBox;
+  // Per-player tracking state
+  final Map<String, bool> playerLocked  = {};
+  final Map<String, bool> playerVisible = {};
+  final Map<String, Rect?> playerBoxes  = {};
+  final Map<String, List<PoseLandmark>> skeletons = {};
+  final Map<String, double> confidences = {};
+
+  // Flash state
   bool showFlash = false;
+  String? flashJersey;
   EventType? flashType;
 
-  // Skeleton joint positions for overlay
-  List<PoseLandmark> skeletonLandmarks = [];
-  double detectionConfidence = 0.0;
-
-  // Player lost timer — marks player as lost after 2s without detection
-  Timer? _playerLostTimer;
-  Timer? _flashTimer;
+  // Session timer
+  int timerSeconds = 0;
   Timer? _sessionTimer;
+  Timer? _flashTimer;
+  final Map<String, Timer?> _playerLostTimers = {};
+
+  // Which player is selected for manual logging
+  int selectedPlayerIndex = 0;
 
   get cameraController => _cameraService.controller;
 
-  int get pointPercentage => hits > 0 ? ((points / hits) * 100).round() : 0;
-
-  TrackingViewModel({required this.jersey, required this.playerName});
+  TrackingViewModel({required this.players}) {
+    for (final p in players) {
+      stats[p.jersey]         = PlayerStats(jersey: p.jersey, name: p.name);
+      playerLocked[p.jersey]  = false;
+      playerVisible[p.jersey] = false;
+      playerBoxes[p.jersey]   = null;
+      skeletons[p.jersey]     = [];
+      confidences[p.jersey]   = 0.0;
+    }
+  }
 
   Future<void> initialise() async {
     await _cameraService.initialise();
 
-    _cameraService.poseAnalyser.onHitDetected   = () => recordEvent(EventType.hit,   auto: true);
-    _cameraService.poseAnalyser.onBlockDetected = () => recordEvent(EventType.block, auto: true);
+    // Wire up pose analysers for each player
+    for (final p in players) {
+      _cameraService.poseAnalysers[p.jersey]?.onHitDetected = () {
+        recordEvent(p.jersey, EventType.hit, auto: true);
+      };
+      _cameraService.poseAnalysers[p.jersey]?.onBlockDetected = () {
+        recordEvent(p.jersey, EventType.block, auto: true);
+      };
+    }
 
-    _cameraService.onPlayerDetected = (number, box) {
-      isPlayerLocked = true;
-      playerVisible  = true;
-      playerBoundingBox = box;
+    _cameraService.onPlayerDetected = (jersey, box) {
+      playerLocked[jersey]  = true;
+      playerVisible[jersey] = true;
+      playerBoxes[jersey]   = box;
 
-      // Reset lost timer every time player is detected
-      _playerLostTimer?.cancel();
-      _playerLostTimer = Timer(const Duration(seconds: 2), () {
-        playerVisible = false;
+      _playerLostTimers[jersey]?.cancel();
+      _playerLostTimers[jersey] = Timer(const Duration(seconds: 2), () {
+        playerVisible[jersey] = false;
         notifyListeners();
       });
 
       notifyListeners();
     };
 
-    // Pass skeleton data through from camera service
-    _cameraService.onPoseUpdated = (landmarks, confidence) {
-      skeletonLandmarks  = landmarks;
-      detectionConfidence = confidence;
+    _cameraService.onPlayerLost = (jersey) {
+      playerVisible[jersey] = false;
       notifyListeners();
     };
 
-    await _cameraService.startCamera(jersey);
+    _cameraService.onPoseUpdated = (landmarks, confidence, jersey) {
+      skeletons[jersey]     = landmarks;
+      confidences[jersey]   = confidence;
+      notifyListeners();
+    };
+
+    await _cameraService.startCamera(players.map((p) => p.jersey).toList());
     _startTimer();
     notifyListeners();
   }
@@ -77,17 +96,19 @@ class TrackingViewModel extends ChangeNotifier {
   void _startTimer() {
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       timerSeconds++;
+      // Increment game time for all visible players
+      for (final p in players) {
+        if (playerVisible[p.jersey] == true) {
+          stats[p.jersey]?.gameTimeSeconds++;
+        }
+      }
       notifyListeners();
     });
   }
 
-  void recordEvent(EventType type, {bool auto = false}) {
-    switch (type) {
-      case EventType.hit:   hits++;   break;
-      case EventType.block: blocks++; break;
-      case EventType.point: points++; break;
-    }
-    events.add(GameEvent(type: type, timestampSeconds: timerSeconds, isAutoDetected: auto));
+  void recordEvent(String jersey, EventType type, {bool auto = false}) {
+    stats[jersey]?.recordEvent(type, timerSeconds, auto: auto);
+    flashJersey = jersey;
     _triggerFlash(type);
     notifyListeners();
   }
@@ -103,24 +124,25 @@ class TrackingViewModel extends ChangeNotifier {
     });
   }
 
-  Future<SessionModel> endSession() async {
+  void selectPlayer(int index) {
+    selectedPlayerIndex = index;
+    notifyListeners();
+  }
+
+  PlayerConfig get selectedPlayer => players[selectedPlayerIndex];
+
+  Future<List<PlayerStats>> endSession() async {
     _sessionTimer?.cancel();
     _flashTimer?.cancel();
-    _playerLostTimer?.cancel();
+    for (final t in _playerLostTimers.values) t?.cancel();
     await _cameraService.stopCamera();
 
-    final session = SessionModel(
-      jersey: jersey,
-      playerName: playerName,
-      date: DateTime.now(),
-      durationSeconds: timerSeconds,
-      hits: hits,
-      blocks: blocks,
-      points: points,
-      events: List.from(events),
-    );
-    await _db.saveSession(session);
-    return session;
+    final results = players.map((p) => stats[p.jersey]!).toList();
+    // Save each player's session
+    for (final s in results) {
+      await _db.saveSession(s.toSessionModel());
+    }
+    return results;
   }
 
   String get formattedTime {
@@ -133,8 +155,25 @@ class TrackingViewModel extends ChangeNotifier {
   void dispose() {
     _sessionTimer?.cancel();
     _flashTimer?.cancel();
-    _playerLostTimer?.cancel();
+    for (final t in _playerLostTimers.values) t?.cancel();
     _cameraService.dispose();
     super.dispose();
+  }
+}
+
+// Extension to convert PlayerStats to SessionModel for saving
+extension PlayerStatsExt on PlayerStats {
+  dynamic toSessionModel() {
+    // Returns a map that DatabaseService can save
+    return {
+      'jersey': jersey,
+      'playerName': name,
+      'date': DateTime.now().toIso8601String(),
+      'durationSeconds': gameTimeSeconds,
+      'hits': hits,
+      'blocks': blocks,
+      'points': points,
+      'eventsJson': '[]',
+    };
   }
 }
