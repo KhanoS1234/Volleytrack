@@ -101,35 +101,28 @@ class CameraService {
         await _runOCR(inputImage);
       }
 
-      // 3. Check lost players
-      for (final jersey in _targetJerseys) {
-        final framesSince = _framesSinceDetection[jersey] ?? 0;
-        final isLocked    = _playerLockedPermanent[jersey] ?? false;
+      // Check lost players
+for (final jersey in _targetJerseys) {
+  final framesSince = _framesSinceDetection[jersey] ?? 0;
+  final isLocked    = _playerLockedPermanent[jersey] ?? false;
 
-        if (isLocked) {
-          // Locked — hold position for 5 seconds before marking lost
-          if (framesSince > _maxFramesWithoutDetection) {
-            _playerLockedPermanent[jersey] = false;
-            _consecutiveDetections[jersey] = 0;
-            onPlayerLost?.call(jersey);
-          } else if (_lastKnownBoxes[jersey] != null) {
-            // Keep reporting last known position
-            onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
-          }
-        } else {
-          // Not locked yet — mark lost after 1 second
-          if (framesSince > 30) {
-            onPlayerLost?.call(jersey);
-          }
-        }
-      }
-
-    } catch (_) {
-      // Continue silently on frame errors
-    } finally {
-      _isProcessing = false;
+  if (isLocked) {
+    // Player was locked — hold position for 5 seconds
+    if (framesSince > _maxFramesWithoutDetection) {
+      _playerLockedPermanent[jersey] = false;
+      _consecutiveDetections[jersey] = 0;
+      onPlayerLost?.call(jersey);
+    } else if (_lastKnownBoxes[jersey] != null) {
+      // Keep reporting last known position every frame
+      onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
+    }
+  } else {
+    // Not locked yet — mark lost after 1 second
+    if (framesSince > 30) {
+      onPlayerLost?.call(jersey);
     }
   }
+}
 
   void _assignPosesToPlayers(List<Pose> poses) {
     for (final pose in poses) {
