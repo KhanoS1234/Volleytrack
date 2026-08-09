@@ -322,6 +322,5 @@ for (final jersey in _targetJerseys) {
     await stopCamera();
     await _poseDetector.close();
     await _textRecognizer.close();
-    await ballTracker.dispose();
   }
 }
