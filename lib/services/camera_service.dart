@@ -26,17 +26,16 @@ class CameraService {
   List<String> _targetJerseys = [];
   int _frameCount = 0;
 
-  // Once locked, OCR runs every 30 frames instead of every 3
-  static const int _ocrEveryNFrames    = 3;
+  // Scan every frame until locked, then slow down
+  static const int _ocrEveryNFrames    = 1;
   static const int _ocrAfterLockFrames = 30;
   static const int _confirmationFrames = 1;
-  // 150 frames = ~5 seconds at 30fps before player is considered lost
+  // 150 frames = ~5 seconds at 30fps
   static const int _maxFramesWithoutDetection = 150;
 
   final Map<String, int>   _consecutiveDetections = {};
   final Map<String, Rect?> _lastKnownBoxes        = {};
   final Map<String, int>   _framesSinceDetection  = {};
-  // Once true, player stays locked even when OCR can't see the number
   final Map<String, bool>  _playerLockedPermanent = {};
 
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
@@ -84,7 +83,6 @@ class CameraService {
     _isProcessing = true;
     _frameCount++;
 
-    // Increment frames since last detection for all players
     for (final jersey in _targetJerseys) {
       _framesSinceDetection[jersey] = (_framesSinceDetection[jersey] ?? 0) + 1;
     }
@@ -97,7 +95,7 @@ class CameraService {
       final poses = await _poseDetector.processImage(inputImage);
       _assignPosesToPlayers(poses);
 
-      // 2. OCR — slow down once players are locked
+      // 2. OCR — every frame until locked, then every 30 frames
       final anyLocked   = _playerLockedPermanent.values.any((v) => v);
       final ocrInterval = anyLocked ? _ocrAfterLockFrames : _ocrEveryNFrames;
       if (_frameCount % ocrInterval == 0) {
@@ -110,17 +108,14 @@ class CameraService {
         final isLocked    = _playerLockedPermanent[jersey] ?? false;
 
         if (isLocked) {
-          // Locked — hold for 5 seconds before marking lost
           if (framesSince > _maxFramesWithoutDetection) {
             _playerLockedPermanent[jersey] = false;
             _consecutiveDetections[jersey] = 0;
             onPlayerLost?.call(jersey);
           } else if (_lastKnownBoxes[jersey] != null) {
-            // Keep reporting last known position every frame
             onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
           }
         } else {
-          // Not yet locked — mark lost after 1 second
           if (framesSince > 30) {
             onPlayerLost?.call(jersey);
           }
@@ -146,7 +141,6 @@ class CameraService {
       String? matchedJersey;
       double  closestDistance = double.infinity;
 
-      // First try to match pose to a box that contains it
       for (final jersey in _targetJerseys) {
         final box = _lastKnownBoxes[jersey];
         if (box == null) continue;
@@ -161,7 +155,6 @@ class CameraService {
         }
       }
 
-      // Fall back to nearest box if none contained it
       if (matchedJersey == null) {
         for (final jersey in _targetJerseys) {
           final box = _lastKnownBoxes[jersey];
@@ -178,11 +171,10 @@ class CameraService {
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
 
-      // Update bounding box to follow pose hips when locked
+      // When locked, update box position to follow skeleton hips
       if (_playerLockedPermanent[matchedJersey] == true) {
         final currentBox = _lastKnownBoxes[matchedJersey];
         if (currentBox != null) {
-          // Centre the box on the hip position
           final newBox = Rect.fromCenter(
             center: Offset(poseCentreX, poseCentreY - currentBox.height * 0.2),
             width:  currentBox.width,
@@ -212,33 +204,48 @@ class CameraService {
     final recognised = await _textRecognizer.processImage(inputImage);
 
     for (final block in recognised.blocks) {
+      // Clean common OCR mistakes
       String text = block.text
           .trim()
           .replaceAll(' ', '')
           .replaceAll('\n', '')
           .replaceAll('O', '0')
+          .replaceAll('o', '0')
           .replaceAll('I', '1')
-          .replaceAll('l', '1');
+          .replaceAll('l', '1')
+          .replaceAll('i', '1')
+          .replaceAll('S', '5')
+          .replaceAll('G', '6')
+          .replaceAll('B', '8')
+          .replaceAll('g', '9');
 
-      if (!RegExp(r'^\d{1,2}$').hasMatch(text)) continue;
+      // Extract ALL 1-2 digit numbers from the text block
+      // This handles OCR reading "WATSON42" and still finding "42"
+      // It also handles the name being read alongside the number
+      final digitMatches = RegExp(r'\d{1,2}').allMatches(text);
+      if (digitMatches.isEmpty) continue;
 
-      for (final jersey in _targetJerseys) {
-        if (text != jersey && !block.text.contains(jersey)) continue;
+      for (final match in digitMatches) {
+        final number = match.group(0)!;
 
-        _consecutiveDetections[jersey] = (_consecutiveDetections[jersey] ?? 0) + 1;
-        _framesSinceDetection[jersey]  = 0;
+        for (final jersey in _targetJerseys) {
+          if (number != jersey) continue;
 
-        if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
-          final bb = block.boundingBox;
-          final expanded = Rect.fromLTWH(
-            bb.left  - bb.width  * 6,
-            bb.top   - bb.height * 12,
-            bb.width  * 13,
-            bb.height * 28,
-          );
-          _lastKnownBoxes[jersey]        = expanded;
-          _playerLockedPermanent[jersey] = true;
-          onPlayerDetected?.call(jersey, expanded);
+          _consecutiveDetections[jersey] = (_consecutiveDetections[jersey] ?? 0) + 1;
+          _framesSinceDetection[jersey]  = 0;
+
+          if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
+            final bb = block.boundingBox;
+            final expanded = Rect.fromLTWH(
+              bb.left  - bb.width  * 6,
+              bb.top   - bb.height * 12,
+              bb.width  * 13,
+              bb.height * 28,
+            );
+            _lastKnownBoxes[jersey]        = expanded;
+            _playerLockedPermanent[jersey] = true;
+            onPlayerDetected?.call(jersey, expanded);
+          }
         }
       }
     }
