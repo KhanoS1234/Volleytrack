@@ -10,56 +10,68 @@ import '../services/database_service.dart';
 class TrackingViewModel extends ChangeNotifier {
   final List<PlayerConfig> players;
 
-  final CameraService _cameraService = CameraService();
-  final DatabaseService _db = DatabaseService();
+  final CameraService  _cameraService = CameraService();
+  final DatabaseService _db           = DatabaseService();
 
-  // Per-player stats
-  final Map<String, PlayerStats> stats = {};
-
-  // Per-player tracking state
-  final Map<String, bool> playerLocked  = {};
-  final Map<String, bool> playerVisible = {};
-  final Map<String, Rect?> playerBoxes  = {};
+  final Map<String, PlayerStats> stats        = {};
+  final Map<String, bool>  playerLocked       = {};
+  final Map<String, bool>  playerVisible      = {};
+  final Map<String, Rect?> playerBoxes        = {};
   final Map<String, List<PoseLandmark>> skeletons = {};
-  final Map<String, double> confidences = {};
+  final Map<String, double> confidences       = {};
 
-  // Flash state
-  bool showFlash = false;
-  String? flashJersey;
+  // Ball tracking state
+  Offset? ballPosition;
+  double  ballRadius   = 0;
+  bool    ballVisible  = false;
+
+  // Flash
+  bool       showFlash  = false;
+  String?    flashJersey;
   EventType? flashType;
+  String?    flashSource; // 'AI', 'Ball', or 'Manual'
 
-  // Session timer
   int timerSeconds = 0;
   Timer? _sessionTimer;
   Timer? _flashTimer;
   final Map<String, Timer?> _playerLostTimers = {};
 
-  // Which player is selected for manual logging
+  // Cooldown prevents ball hit from double-firing
+  final Map<String, DateTime> _lastBallHit = {};
+  static const Duration _ballHitCooldown = Duration(seconds: 2);
+
   int selectedPlayerIndex = 0;
 
   get cameraController => _cameraService.controller;
 
   TrackingViewModel({required this.players}) {
     for (final p in players) {
-      stats[p.jersey]         = PlayerStats(jersey: p.jersey, name: p.name);
-      playerLocked[p.jersey]  = false;
-      playerVisible[p.jersey] = false;
-      playerBoxes[p.jersey]   = null;
-      skeletons[p.jersey]     = [];
-      confidences[p.jersey]   = 0.0;
+      stats[p.jersey]        = PlayerStats(jersey: p.jersey, name: p.name);
+      playerLocked[p.jersey] = false;
+      playerVisible[p.jersey]= false;
+      playerBoxes[p.jersey]  = null;
+      skeletons[p.jersey]    = [];
+      confidences[p.jersey]  = 0.0;
+      _lastBallHit[p.jersey] = DateTime(2000);
     }
   }
 
   Future<void> initialise() async {
     await _cameraService.initialise();
 
-    // Wire up pose analysers for each player
     for (final p in players) {
+      // Pose-based detection (arm movement only) — lower confidence
       _cameraService.poseAnalysers[p.jersey]?.onHitDetected = () {
-        recordEvent(p.jersey, EventType.hit, auto: true);
+        // Only fire if ball is also visible nearby — reduces false positives
+        if (ballVisible) {
+          _recordConfirmedHit(p.jersey, source: 'Ball+Pose');
+        } else {
+          // Still record but mark as pose-only for review
+          recordEvent(p.jersey, EventType.hit, auto: true, source: 'Pose');
+        }
       };
       _cameraService.poseAnalysers[p.jersey]?.onBlockDetected = () {
-        recordEvent(p.jersey, EventType.block, auto: true);
+        recordEvent(p.jersey, EventType.block, auto: true, source: 'Pose');
       };
     }
 
@@ -67,13 +79,11 @@ class TrackingViewModel extends ChangeNotifier {
       playerLocked[jersey]  = true;
       playerVisible[jersey] = true;
       playerBoxes[jersey]   = box;
-
       _playerLostTimers[jersey]?.cancel();
       _playerLostTimers[jersey] = Timer(const Duration(seconds: 2), () {
         playerVisible[jersey] = false;
         notifyListeners();
       });
-
       notifyListeners();
     };
 
@@ -83,9 +93,28 @@ class TrackingViewModel extends ChangeNotifier {
     };
 
     _cameraService.onPoseUpdated = (landmarks, confidence, jersey) {
-      skeletons[jersey]     = landmarks;
-      confidences[jersey]   = confidence;
+      skeletons[jersey]   = landmarks;
+      confidences[jersey] = confidence;
       notifyListeners();
+    };
+
+    // Ball detected
+    _cameraService.onBallDetected = (position, radius) {
+      ballPosition = position;
+      ballRadius   = radius;
+      ballVisible  = true;
+      notifyListeners();
+    };
+
+    // Ball lost
+    _cameraService.onBallLost = () {
+      ballVisible = false;
+      notifyListeners();
+    };
+
+    // Ball + wrist proximity confirmed hit
+    _cameraService.onBallHitConfirmed = (jersey) {
+      _recordConfirmedHit(jersey, source: 'Ball');
     };
 
     await _cameraService.startCamera(players.map((p) => p.jersey).toList());
@@ -93,10 +122,18 @@ class TrackingViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Ball-confirmed hit — has cooldown to prevent double counting
+  void _recordConfirmedHit(String jersey, {required String source}) {
+    final now  = DateTime.now();
+    final last = _lastBallHit[jersey] ?? DateTime(2000);
+    if (now.difference(last) < _ballHitCooldown) return;
+    _lastBallHit[jersey] = now;
+    recordEvent(jersey, EventType.hit, auto: true, source: source);
+  }
+
   void _startTimer() {
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       timerSeconds++;
-      // Increment game time for all visible players
       for (final p in players) {
         if (playerVisible[p.jersey] == true) {
           stats[p.jersey]?.gameTimeSeconds++;
@@ -106,9 +143,10 @@ class TrackingViewModel extends ChangeNotifier {
     });
   }
 
-  void recordEvent(String jersey, EventType type, {bool auto = false}) {
+  void recordEvent(String jersey, EventType type, {bool auto = false, String source = 'Manual'}) {
     stats[jersey]?.recordEvent(type, timerSeconds, auto: auto);
     flashJersey = jersey;
+    flashSource = source;
     _triggerFlash(type);
     notifyListeners();
   }
@@ -118,7 +156,7 @@ class TrackingViewModel extends ChangeNotifier {
     flashType = type;
     notifyListeners();
     _flashTimer?.cancel();
-    _flashTimer = Timer(const Duration(milliseconds: 1200), () {
+    _flashTimer = Timer(const Duration(milliseconds: 1400), () {
       showFlash = false;
       notifyListeners();
     });
@@ -132,30 +170,29 @@ class TrackingViewModel extends ChangeNotifier {
   PlayerConfig get selectedPlayer => players[selectedPlayerIndex];
 
   Future<List<PlayerStats>> endSession() async {
-  _sessionTimer?.cancel();
-  _flashTimer?.cancel();
-  for (final t in _playerLostTimers.values) t?.cancel();
-  await _cameraService.stopCamera();
+    _sessionTimer?.cancel();
+    _flashTimer?.cancel();
+    for (final t in _playerLostTimers.values) t?.cancel();
+    await _cameraService.stopCamera();
 
-  final results = players.map((p) => stats[p.jersey]!).toList();
+    final results = players.map((p) => stats[p.jersey]!).toList();
 
-  // Save each player session to database
-  for (final s in results) {
-    final db = DatabaseService();
-    await db.database.then((database) => database.insert('sessions', {
-      'jersey': s.jersey,
-      'playerName': s.name,
-      'date': DateTime.now().toIso8601String(),
-      'durationSeconds': s.gameTimeSeconds,
-      'hits': s.hits,
-      'blocks': s.blocks,
-      'points': s.points,
-      'eventsJson': '[]',
-    }));
+    for (final s in results) {
+      final db = await _db.database;
+      await db.insert('sessions', {
+        'jersey':          s.jersey,
+        'playerName':      s.name,
+        'date':            DateTime.now().toIso8601String(),
+        'durationSeconds': s.gameTimeSeconds,
+        'hits':            s.hits,
+        'blocks':          s.blocks,
+        'points':          s.points,
+        'eventsJson':      '[]',
+      });
+    }
+
+    return results;
   }
-
-  return results;
-}
 
   String get formattedTime {
     final m = (timerSeconds ~/ 60).toString().padLeft(2, '0');
@@ -173,19 +210,15 @@ class TrackingViewModel extends ChangeNotifier {
   }
 }
 
-// Extension to convert PlayerStats to SessionModel for saving
 extension PlayerStatsExt on PlayerStats {
-  dynamic toSessionModel() {
-    // Returns a map that DatabaseService can save
-    return {
-      'jersey': jersey,
-      'playerName': name,
-      'date': DateTime.now().toIso8601String(),
-      'durationSeconds': gameTimeSeconds,
-      'hits': hits,
-      'blocks': blocks,
-      'points': points,
-      'eventsJson': '[]',
-    };
-  }
+  dynamic toSessionModel() => {
+    'jersey':          jersey,
+    'playerName':      name,
+    'date':            DateTime.now().toIso8601String(),
+    'durationSeconds': gameTimeSeconds,
+    'hits':            hits,
+    'blocks':          blocks,
+    'points':          points,
+    'eventsJson':      '[]',
+  };
 }
