@@ -26,15 +26,18 @@ class CameraService {
   List<String> _targetJerseys = [];
   int _frameCount = 0;
 
-  static const int _ocrEveryNFrames   = 3;
+  // Once locked, OCR runs every 30 frames instead of every 3
+  static const int _ocrEveryNFrames    = 3;
   static const int _ocrAfterLockFrames = 30;
   static const int _confirmationFrames = 1;
+  // 150 frames = ~5 seconds at 30fps before player is considered lost
   static const int _maxFramesWithoutDetection = 150;
 
-  final Map<String, int>   _consecutiveDetections  = {};
-  final Map<String, Rect?> _lastKnownBoxes         = {};
-  final Map<String, int>   _framesSinceDetection   = {};
-  final Map<String, bool>  _playerLockedPermanent  = {};
+  final Map<String, int>   _consecutiveDetections = {};
+  final Map<String, Rect?> _lastKnownBoxes        = {};
+  final Map<String, int>   _framesSinceDetection  = {};
+  // Once true, player stays locked even when OCR can't see the number
+  final Map<String, bool>  _playerLockedPermanent = {};
 
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
   Function(String jersey)?                   onPlayerLost;
@@ -81,7 +84,7 @@ class CameraService {
     _isProcessing = true;
     _frameCount++;
 
-    // Increment lost counter for all players each frame
+    // Increment frames since last detection for all players
     for (final jersey in _targetJerseys) {
       _framesSinceDetection[jersey] = (_framesSinceDetection[jersey] ?? 0) + 1;
     }
@@ -94,35 +97,42 @@ class CameraService {
       final poses = await _poseDetector.processImage(inputImage);
       _assignPosesToPlayers(poses);
 
-      // 2. OCR — run less frequently once locked
-      final anyLocked = _playerLockedPermanent.values.any((v) => v);
+      // 2. OCR — slow down once players are locked
+      final anyLocked   = _playerLockedPermanent.values.any((v) => v);
       final ocrInterval = anyLocked ? _ocrAfterLockFrames : _ocrEveryNFrames;
       if (_frameCount % ocrInterval == 0) {
         await _runOCR(inputImage);
       }
 
-      // Check lost players
-for (final jersey in _targetJerseys) {
-  final framesSince = _framesSinceDetection[jersey] ?? 0;
-  final isLocked    = _playerLockedPermanent[jersey] ?? false;
+      // 3. Check lost players
+      for (final jersey in _targetJerseys) {
+        final framesSince = _framesSinceDetection[jersey] ?? 0;
+        final isLocked    = _playerLockedPermanent[jersey] ?? false;
 
-  if (isLocked) {
-    // Player was locked — hold position for 5 seconds
-    if (framesSince > _maxFramesWithoutDetection) {
-      _playerLockedPermanent[jersey] = false;
-      _consecutiveDetections[jersey] = 0;
-      onPlayerLost?.call(jersey);
-    } else if (_lastKnownBoxes[jersey] != null) {
-      // Keep reporting last known position every frame
-      onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
-    }
-  } else {
-    // Not locked yet — mark lost after 1 second
-    if (framesSince > 30) {
-      onPlayerLost?.call(jersey);
+        if (isLocked) {
+          // Locked — hold for 5 seconds before marking lost
+          if (framesSince > _maxFramesWithoutDetection) {
+            _playerLockedPermanent[jersey] = false;
+            _consecutiveDetections[jersey] = 0;
+            onPlayerLost?.call(jersey);
+          } else if (_lastKnownBoxes[jersey] != null) {
+            // Keep reporting last known position every frame
+            onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
+          }
+        } else {
+          // Not yet locked — mark lost after 1 second
+          if (framesSince > 30) {
+            onPlayerLost?.call(jersey);
+          }
+        }
+      }
+
+    } catch (_) {
+      // Continue silently on frame errors
+    } finally {
+      _isProcessing = false;
     }
   }
-}
 
   void _assignPosesToPlayers(List<Pose> poses) {
     for (final pose in poses) {
@@ -136,14 +146,14 @@ for (final jersey in _targetJerseys) {
       String? matchedJersey;
       double  closestDistance = double.infinity;
 
-      // First try to match to a box that contains this pose
+      // First try to match pose to a box that contains it
       for (final jersey in _targetJerseys) {
         final box = _lastKnownBoxes[jersey];
         if (box == null) continue;
         if (box.contains(Offset(poseCentreX, poseCentreY))) {
           final cx   = box.left + box.width  / 2;
           final cy   = box.top  + box.height / 2;
-          final dist = _dist(poseCentreX, poseCentreY, cx, cy);
+          final dist = _squaredDistance(poseCentreX, poseCentreY, cx, cy);
           if (dist < closestDistance) {
             closestDistance = dist;
             matchedJersey   = jersey;
@@ -151,14 +161,14 @@ for (final jersey in _targetJerseys) {
         }
       }
 
-      // Fall back to nearest box
+      // Fall back to nearest box if none contained it
       if (matchedJersey == null) {
         for (final jersey in _targetJerseys) {
           final box = _lastKnownBoxes[jersey];
           if (box == null) continue;
           final cx   = box.left + box.width  / 2;
           final cy   = box.top  + box.height / 2;
-          final dist = _dist(poseCentreX, poseCentreY, cx, cy);
+          final dist = _squaredDistance(poseCentreX, poseCentreY, cx, cy);
           if (dist < closestDistance) {
             closestDistance = dist;
             matchedJersey   = jersey;
@@ -167,6 +177,20 @@ for (final jersey in _targetJerseys) {
       }
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
+
+      // Update bounding box to follow pose hips when locked
+      if (_playerLockedPermanent[matchedJersey] == true) {
+        final currentBox = _lastKnownBoxes[matchedJersey];
+        if (currentBox != null) {
+          // Centre the box on the hip position
+          final newBox = Rect.fromCenter(
+            center: Offset(poseCentreX, poseCentreY - currentBox.height * 0.2),
+            width:  currentBox.width,
+            height: currentBox.height,
+          );
+          _lastKnownBoxes[matchedJersey] = newBox;
+        }
+      }
 
       poseAnalysers[matchedJersey]?.addPose(pose);
 
@@ -243,7 +267,7 @@ for (final jersey in _targetJerseys) {
     );
   }
 
-  double _dist(double x1, double y1, double x2, double y2) {
+  double _squaredDistance(double x1, double y1, double x2, double y2) {
     final dx = x1 - x2;
     final dy = y1 - y2;
     return dx * dx + dy * dy;
