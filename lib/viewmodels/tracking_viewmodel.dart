@@ -132,18 +132,30 @@ class TrackingViewModel extends ChangeNotifier {
   PlayerConfig get selectedPlayer => players[selectedPlayerIndex];
 
   Future<List<PlayerStats>> endSession() async {
-    _sessionTimer?.cancel();
-    _flashTimer?.cancel();
-    for (final t in _playerLostTimers.values) t?.cancel();
-    await _cameraService.stopCamera();
+  _sessionTimer?.cancel();
+  _flashTimer?.cancel();
+  for (final t in _playerLostTimers.values) t?.cancel();
+  await _cameraService.stopCamera();
 
-    final results = players.map((p) => stats[p.jersey]!).toList();
-    // Save each player's session
-    for (final s in results) {
-      await _db.saveSession(s.toSessionModel());
-    }
-    return results;
+  final results = players.map((p) => stats[p.jersey]!).toList();
+
+  // Save each player session to database
+  for (final s in results) {
+    final db = DatabaseService();
+    await db.database.then((database) => database.insert('sessions', {
+      'jersey': s.jersey,
+      'playerName': s.name,
+      'date': DateTime.now().toIso8601String(),
+      'durationSeconds': s.gameTimeSeconds,
+      'hits': s.hits,
+      'blocks': s.blocks,
+      'points': s.points,
+      'eventsJson': '[]',
+    }));
   }
+
+  return results;
+}
 
   String get formattedTime {
     final m = (timerSeconds ~/ 60).toString().padLeft(2, '0');
