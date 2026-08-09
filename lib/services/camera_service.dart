@@ -4,6 +4,7 @@ import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'dart:ui' show Rect, Size, Offset;
 import 'pose_analyser.dart';
+import 'photo_matcher.dart';
 
 class CameraService {
   CameraController? controller;
@@ -20,17 +21,19 @@ class CameraService {
     script: TextRecognitionScript.latin,
   );
 
+  // Photo matching — runs alongside OCR
+  final PhotoMatcher _photoMatcher = PhotoMatcher();
+
   final Map<String, PoseAnalyser> poseAnalysers = {};
 
   bool _isProcessing = false;
   List<String> _targetJerseys = [];
   int _frameCount = 0;
 
-  // Scan every frame until locked, then slow down
-  static const int _ocrEveryNFrames    = 1;
-  static const int _ocrAfterLockFrames = 30;
-  static const int _confirmationFrames = 1;
-  // 150 frames = ~5 seconds at 30fps
+  static const int _ocrEveryNFrames     = 1;
+  static const int _ocrAfterLockFrames  = 30;
+  static const int _photoEveryNFrames   = 5; // photo match every 5 frames
+  static const int _confirmationFrames  = 1;
   static const int _maxFramesWithoutDetection = 150;
 
   final Map<String, int>   _consecutiveDetections = {};
@@ -40,11 +43,18 @@ class CameraService {
 
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
   Function(String jersey)?                   onPlayerLost;
-  Function(List<PoseLandmark> landmarks, double confidence, String jersey)? onPoseUpdated;
+  Function(List<PoseLandmark> landmarks, double confidence, String jersey)?
+      onPoseUpdated;
 
   Future<void> initialise() async {
     _cameras = await availableCameras();
     if (_cameras.isEmpty) throw Exception('No cameras found');
+  }
+
+  /// Register reference photos for photo matching
+  Future<void> registerPlayerPhotos(
+      String jersey, List<String> photoPaths) async {
+    await _photoMatcher.registerPlayer(jersey, photoPaths);
   }
 
   Future<void> startCamera(List<String> targetJerseys) async {
@@ -84,7 +94,8 @@ class CameraService {
     _frameCount++;
 
     for (final jersey in _targetJerseys) {
-      _framesSinceDetection[jersey] = (_framesSinceDetection[jersey] ?? 0) + 1;
+      _framesSinceDetection[jersey] =
+          (_framesSinceDetection[jersey] ?? 0) + 1;
     }
 
     try {
@@ -102,7 +113,17 @@ class CameraService {
         await _runOCR(inputImage);
       }
 
-      // 3. Check lost players
+      // 3. Photo matching — runs every 5 frames for unlocked players
+      // Only runs if we have registered photos and some players aren't locked
+      final hasUnlocked = _playerLockedPermanent.values.any((v) => !v);
+      if (hasUnlocked &&
+          _photoMatcher.hasFingerprints &&
+          _frameCount % _photoEveryNFrames == 0 &&
+          image.planes.isNotEmpty) {
+        await _runPhotoMatch(image);
+      }
+
+      // 4. Check lost players
       for (final jersey in _targetJerseys) {
         final framesSince = _framesSinceDetection[jersey] ?? 0;
         final isLocked    = _playerLockedPermanent[jersey] ?? false;
@@ -123,9 +144,46 @@ class CameraService {
       }
 
     } catch (_) {
-      // Continue silently on frame errors
+      // Continue silently
     } finally {
       _isProcessing = false;
+    }
+  }
+
+  Future<void> _runPhotoMatch(CameraImage image) async {
+    try {
+      final bytes = image.planes[0].bytes;
+      final matchedJersey = await _photoMatcher.findMatchInFrame(
+        bytes,
+        image.width,
+        image.height,
+      );
+
+      if (matchedJersey != null &&
+          !(_playerLockedPermanent[matchedJersey] ?? false)) {
+        // Photo match found — treat same as OCR detection
+        _consecutiveDetections[matchedJersey] =
+            (_consecutiveDetections[matchedJersey] ?? 0) + 1;
+        _framesSinceDetection[matchedJersey] = 0;
+
+        if ((_consecutiveDetections[matchedJersey] ?? 0) >=
+            _confirmationFrames) {
+          // Use centre of frame as initial position
+          // Skeleton tracking will refine this immediately
+          final w = image.width.toDouble();
+          final h = image.height.toDouble();
+          final box = Rect.fromCenter(
+            center: Offset(w / 2, h / 2),
+            width:  w * 0.3,
+            height: h * 0.6,
+          );
+          _lastKnownBoxes[matchedJersey]        = box;
+          _playerLockedPermanent[matchedJersey] = true;
+          onPlayerDetected?.call(matchedJersey, box);
+        }
+      }
+    } catch (_) {
+      // Continue silently
     }
   }
 
@@ -171,12 +229,13 @@ class CameraService {
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
 
-      // When locked, update box position to follow skeleton hips
+      // Update box position to follow skeleton hips when locked
       if (_playerLockedPermanent[matchedJersey] == true) {
         final currentBox = _lastKnownBoxes[matchedJersey];
         if (currentBox != null) {
           final newBox = Rect.fromCenter(
-            center: Offset(poseCentreX, poseCentreY - currentBox.height * 0.2),
+            center: Offset(
+                poseCentreX, poseCentreY - currentBox.height * 0.2),
             width:  currentBox.width,
             height: currentBox.height,
           );
@@ -196,7 +255,8 @@ class CameraService {
           .map((t) => pose.landmarks[t]?.likelihood ?? 0.0)
           .reduce((a, b) => a + b) / keyPoints.length;
 
-      onPoseUpdated?.call(pose.landmarks.values.toList(), avgConf, matchedJersey);
+      onPoseUpdated?.call(
+          pose.landmarks.values.toList(), avgConf, matchedJersey);
     }
   }
 
@@ -204,7 +264,6 @@ class CameraService {
     final recognised = await _textRecognizer.processImage(inputImage);
 
     for (final block in recognised.blocks) {
-      // Clean common OCR mistakes
       String text = block.text
           .trim()
           .replaceAll(' ', '')
@@ -219,9 +278,6 @@ class CameraService {
           .replaceAll('B', '8')
           .replaceAll('g', '9');
 
-      // Extract ALL 1-2 digit numbers from the text block
-      // This handles OCR reading "WATSON42" and still finding "42"
-      // It also handles the name being read alongside the number
       final digitMatches = RegExp(r'\d{1,2}').allMatches(text);
       if (digitMatches.isEmpty) continue;
 
@@ -231,8 +287,9 @@ class CameraService {
         for (final jersey in _targetJerseys) {
           if (number != jersey) continue;
 
-          _consecutiveDetections[jersey] = (_consecutiveDetections[jersey] ?? 0) + 1;
-          _framesSinceDetection[jersey]  = 0;
+          _consecutiveDetections[jersey] =
+              (_consecutiveDetections[jersey] ?? 0) + 1;
+          _framesSinceDetection[jersey] = 0;
 
           if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
             final bb = block.boundingBox;
@@ -255,8 +312,9 @@ class CameraService {
     final camera = controller?.description;
     if (camera == null) return null;
 
-    final rotation = InputImageRotationValue.fromRawValue(camera.sensorOrientation)
-        ?? InputImageRotation.rotation0deg;
+    final rotation =
+        InputImageRotationValue.fromRawValue(camera.sensorOrientation) ??
+            InputImageRotation.rotation0deg;
 
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
     if (format == null) return null;
@@ -284,8 +342,11 @@ class CameraService {
     await controller?.stopImageStream();
     await controller?.dispose();
     controller = null;
-    for (final a in poseAnalysers.values) a.reset();
+    for (final a in poseAnalysers.values) {
+      a.reset();
+    }
     poseAnalysers.clear();
+    _photoMatcher.clear();
     _consecutiveDetections.clear();
     _lastKnownBoxes.clear();
     _framesSinceDetection.clear();

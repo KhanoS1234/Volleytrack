@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:ui' show Rect, Offset;
+import 'dart:ui' show Rect;
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../models/game_event.dart';
@@ -13,12 +13,12 @@ class TrackingViewModel extends ChangeNotifier {
   final CameraService   _cameraService = CameraService();
   final DatabaseService _db            = DatabaseService();
 
-  final Map<String, PlayerStats> stats         = {};
-  final Map<String, bool>  playerLocked        = {};
-  final Map<String, bool>  playerVisible       = {};
-  final Map<String, Rect?> playerBoxes         = {};
-  final Map<String, List<PoseLandmark>> skeletons = {};
-  final Map<String, double> confidences        = {};
+  final Map<String, PlayerStats>            stats         = {};
+  final Map<String, bool>                   playerLocked  = {};
+  final Map<String, bool>                   playerVisible = {};
+  final Map<String, Rect?>                  playerBoxes   = {};
+  final Map<String, List<PoseLandmark>>     skeletons     = {};
+  final Map<String, double>                 confidences   = {};
 
   bool       showFlash  = false;
   String?    flashJersey;
@@ -31,6 +31,9 @@ class TrackingViewModel extends ChangeNotifier {
   final Map<String, Timer?> _playerLostTimers = {};
 
   int selectedPlayerIndex = 0;
+
+  bool isInitialising = true;
+  String initStatus   = 'Starting camera...';
 
   get cameraController => _cameraService.controller;
 
@@ -46,6 +49,23 @@ class TrackingViewModel extends ChangeNotifier {
   }
 
   Future<void> initialise() async {
+    // Step 1 — Register reference photos
+    if (players.any((p) => p.photoPaths.isNotEmpty)) {
+      initStatus = 'Loading reference photos...';
+      notifyListeners();
+
+      for (final p in players) {
+        if (p.photoPaths.isNotEmpty) {
+          await _cameraService.registerPlayerPhotos(
+              p.jersey, p.photoPaths);
+        }
+      }
+    }
+
+    // Step 2 — Start camera
+    initStatus = 'Starting camera...';
+    notifyListeners();
+
     await _cameraService.initialise();
 
     for (final p in players) {
@@ -84,6 +104,9 @@ class TrackingViewModel extends ChangeNotifier {
 
     await _cameraService.startCamera(players.map((p) => p.jersey).toList());
 
+    isInitialising = false;
+    notifyListeners();
+
     // Start session timer
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       timerSeconds++;
@@ -94,11 +117,10 @@ class TrackingViewModel extends ChangeNotifier {
       }
       notifyListeners();
     });
-
-    notifyListeners();
   }
 
-  void recordEvent(String jersey, EventType type, {bool auto = false, String source = 'Manual'}) {
+  void recordEvent(String jersey, EventType type,
+      {bool auto = false, String source = 'Manual'}) {
     stats[jersey]?.recordEvent(type, timerSeconds, auto: auto);
     flashJersey = jersey;
     flashSource = source;
@@ -123,7 +145,9 @@ class TrackingViewModel extends ChangeNotifier {
   Future<List<PlayerStats>> endSession() async {
     _sessionTimer?.cancel();
     _flashTimer?.cancel();
-    for (final t in _playerLostTimers.values) t?.cancel();
+    for (final t in _playerLostTimers.values) {
+      t?.cancel();
+    }
     await _cameraService.stopCamera();
 
     final results = players.map((p) => stats[p.jersey]!).toList();
@@ -155,7 +179,9 @@ class TrackingViewModel extends ChangeNotifier {
   void dispose() {
     _sessionTimer?.cancel();
     _flashTimer?.cancel();
-    for (final t in _playerLostTimers.values) t?.cancel();
+    for (final t in _playerLostTimers.values) {
+      t?.cancel();
+    }
     _cameraService.dispose();
     super.dispose();
   }
