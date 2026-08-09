@@ -20,11 +20,6 @@ class TrackingViewModel extends ChangeNotifier {
   final Map<String, List<PoseLandmark>> skeletons = {};
   final Map<String, double> confidences       = {};
 
-  // Ball tracking state
-  Offset? ballPosition;
-  double  ballRadius   = 0;
-  bool    ballVisible  = false;
-
   // Flash
   bool       showFlash  = false;
   String?    flashJersey;
@@ -97,51 +92,13 @@ class TrackingViewModel extends ChangeNotifier {
       confidences[jersey] = confidence;
       notifyListeners();
     };
-
-    // Ball detected
-    _cameraService.onBallDetected = (position, radius) {
-      ballPosition = position;
-      ballRadius   = radius;
-      ballVisible  = true;
-      notifyListeners();
-    };
-
-    // Ball lost
-    _cameraService.onBallLost = () {
-      ballVisible = false;
-      notifyListeners();
-    };
-
-    // Ball + wrist proximity confirmed hit
-    //_cameraService.onBallHitConfirmed = (jersey) {
-      //_recordConfirmedHit(jersey, source: 'Ball');
-    //};
+   
 
     await _cameraService.startCamera(players.map((p) => p.jersey).toList());
     _startTimer();
     notifyListeners();
   }
 
-  /// Ball-confirmed hit — has cooldown to prevent double counting
-  void _recordConfirmedHit(String jersey, {required String source}) {
-    final now  = DateTime.now();
-    final last = _lastBallHit[jersey] ?? DateTime(2000);
-    if (now.difference(last) < _ballHitCooldown) return;
-    _lastBallHit[jersey] = now;
-    recordEvent(jersey, EventType.hit, auto: true, source: source);
-  }
-
-  void _startTimer() {
-    _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      timerSeconds++;
-      for (final p in players) {
-        if (playerVisible[p.jersey] == true) {
-          stats[p.jersey]?.gameTimeSeconds++;
-        }
-      }
-      notifyListeners();
-    });
-  }
 
   void recordEvent(String jersey, EventType type, {bool auto = false, String source = 'Manual'}) {
     stats[jersey]?.recordEvent(type, timerSeconds, auto: auto);
