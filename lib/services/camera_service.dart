@@ -28,32 +28,23 @@ class CameraService {
   List<String> _targetJerseys = [];
   int _frameCount = 0;
 
-  // ── TUNING CONSTANTS ────────────────────────────────────────────────────
   static const int _ocrEveryNFrames    = 1;
-  static const int _ocrAfterLockFrames = 45;  // slow OCR down more after lock
+  static const int _ocrAfterLockFrames = 45;
   static const int _photoEveryNFrames  = 5;
-  static const int _confirmationFrames = 2;   // require 2 consecutive detections
-
-  // Hold last known position for 10 seconds before giving up
-  // This survives spectators, brief turns, and momentary occlusions
-  static const int _maxFramesWithoutDetection = 300; // ~10s at 30fps
-
-  // Maximum distance (squared pixels) a new detection can be from
-  // last known position before we treat it as a false positive
-  // Prevents poles/signs from stealing the lock
-  static const double _maxReacquisitionDistance = 200000.0; // ~450px
-
-  // Minimum consecutive detections needed to RE-lock after losing player
-  // Higher than initial lock to prevent quick false positives
+  static const int _confirmationFrames = 2;
+  static const int _maxFramesWithoutDetection = 300;
+  static const double _maxReacquisitionDistance = 200000.0;
   static const int _relockConfirmationFrames = 3;
-  // ────────────────────────────────────────────────────────────────────────
 
-  final Map<String, int>    _consecutiveDetections  = {};
-  final Map<String, Rect?>  _lastKnownBoxes         = {};
-  final Map<String, int>    _framesSinceDetection   = {};
-  final Map<String, bool>   _playerLockedPermanent  = {};
-  // Track how many times we've seen a candidate position before relocking
-  final Map<String, int>    _relockCandidateCount   = {};
+  // Frame dimensions — used for bounding box clamping
+  static const double _frameW = 1280.0;
+  static const double _frameH = 720.0;
+
+  final Map<String, int>     _consecutiveDetections = {};
+  final Map<String, Rect?>   _lastKnownBoxes        = {};
+  final Map<String, int>     _framesSinceDetection  = {};
+  final Map<String, bool>    _playerLockedPermanent = {};
+  final Map<String, int>     _relockCandidateCount  = {};
   final Map<String, Offset?> _relockCandidatePos    = {};
 
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
@@ -126,7 +117,7 @@ class CameraService {
       final anyLocked   = _playerLockedPermanent.values.any((v) => v);
       final ocrInterval = anyLocked ? _ocrAfterLockFrames : _ocrEveryNFrames;
       if (_frameCount % ocrInterval == 0) {
-        await _runOCR(inputImage, image.width, image.height);
+        await _runOCR(inputImage);
       }
 
       // 3. Photo matching for unlocked players
@@ -145,18 +136,15 @@ class CameraService {
 
         if (isLocked) {
           if (framesSince > _maxFramesWithoutDetection) {
-            // Truly lost — reset and start searching again
             _playerLockedPermanent[jersey]  = false;
             _consecutiveDetections[jersey]  = 0;
             _relockCandidateCount[jersey]   = 0;
             _relockCandidatePos[jersey]     = null;
             onPlayerLost?.call(jersey);
           } else if (_lastKnownBoxes[jersey] != null) {
-            // Still holding last known position — report it
             onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
           }
         } else {
-          // Not locked — waiting for initial detection
           if (framesSince > 30) {
             onPlayerLost?.call(jersey);
           }
@@ -170,18 +158,18 @@ class CameraService {
     }
   }
 
-  /// Try to lock or re-lock a player based on a detected position
-  /// Applies spatial validation to prevent false locks on poles/signs
+  /// Validate and apply a new detection
+  /// Rejects detections that are too far from last known position
   void _tryLockPlayer(String jersey, Rect detectedBox) {
-    final isLocked     = _playerLockedPermanent[jersey] ?? false;
-    final lastBox      = _lastKnownBoxes[jersey];
+    final isLocked       = _playerLockedPermanent[jersey] ?? false;
+    final lastBox        = _lastKnownBoxes[jersey];
     final detectedCentre = Offset(
       detectedBox.left + detectedBox.width  / 2,
       detectedBox.top  + detectedBox.height / 2,
     );
 
-    // If already locked, validate the new detection is near last known pos
     if (isLocked && lastBox != null) {
+      // Already locked — only accept detections near last known position
       final lastCentre = Offset(
         lastBox.left + lastBox.width  / 2,
         lastBox.top  + lastBox.height / 2,
@@ -191,53 +179,45 @@ class CameraService {
         lastCentre.dx,     lastCentre.dy,
       );
 
-      // New detection too far from last known position — likely a false positive
-      if (dist > _maxReacquisitionDistance) {
-        return; // Ignore this detection — poles, signs, other jerseys
-      }
+      if (dist > _maxReacquisitionDistance) return; // too far — reject
 
-      // Valid detection near last known position — update box
       _lastKnownBoxes[jersey]       = detectedBox;
       _framesSinceDetection[jersey] = 0;
       return;
     }
 
-    // Not yet locked — use candidate counting to confirm
-    if (!isLocked) {
-      final lastCandidate = _relockCandidatePos[jersey];
+    // Not locked — require stable candidate position before locking
+    final lastCandidate = _relockCandidatePos[jersey];
 
-      if (lastCandidate != null) {
-        final dist = _squaredDistance(
-          detectedCentre.dx, detectedCentre.dy,
-          lastCandidate.dx,  lastCandidate.dy,
-        );
+    if (lastCandidate != null) {
+      final dist = _squaredDistance(
+        detectedCentre.dx, detectedCentre.dy,
+        lastCandidate.dx,  lastCandidate.dy,
+      );
 
-        // Candidate is in roughly the same spot — increment counter
-        if (dist < _maxReacquisitionDistance) {
-          _relockCandidateCount[jersey] =
-              (_relockCandidateCount[jersey] ?? 0) + 1;
+      if (dist < _maxReacquisitionDistance) {
+        _relockCandidateCount[jersey] =
+            (_relockCandidateCount[jersey] ?? 0) + 1;
 
-          if ((_relockCandidateCount[jersey] ?? 0) >=
-              _relockConfirmationFrames) {
-            // Confirmed stable detection — lock on
-            _lastKnownBoxes[jersey]        = detectedBox;
-            _playerLockedPermanent[jersey] = true;
-            _consecutiveDetections[jersey] = 0;
-            _relockCandidateCount[jersey]  = 0;
-            _relockCandidatePos[jersey]    = null;
-            _framesSinceDetection[jersey]  = 0;
-            onPlayerDetected?.call(jersey, detectedBox);
-          }
-        } else {
-          // Candidate jumped around — reset and start over
-          _relockCandidateCount[jersey] = 1;
-          _relockCandidatePos[jersey]   = detectedCentre;
+        if ((_relockCandidateCount[jersey] ?? 0) >=
+            _relockConfirmationFrames) {
+          // Stable detection confirmed — lock on
+          _lastKnownBoxes[jersey]        = detectedBox;
+          _playerLockedPermanent[jersey] = true;
+          _consecutiveDetections[jersey] = 0;
+          _relockCandidateCount[jersey]  = 0;
+          _relockCandidatePos[jersey]    = null;
+          _framesSinceDetection[jersey]  = 0;
+          onPlayerDetected?.call(jersey, detectedBox);
         }
       } else {
-        // First candidate — start counting
+        // Candidate jumped — reset
         _relockCandidateCount[jersey] = 1;
         _relockCandidatePos[jersey]   = detectedCentre;
       }
+    } else {
+      _relockCandidateCount[jersey] = 1;
+      _relockCandidatePos[jersey]   = detectedCentre;
     }
   }
 
@@ -283,7 +263,7 @@ class CameraService {
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
 
-      // Update bounding box to follow skeleton hips when locked
+      // Update box to follow skeleton hips when locked
       if (_playerLockedPermanent[matchedJersey] == true) {
         final currentBox = _lastKnownBoxes[matchedJersey];
         if (currentBox != null) {
@@ -293,8 +273,7 @@ class CameraService {
             width:  currentBox.width,
             height: currentBox.height,
           );
-          _lastKnownBoxes[matchedJersey] = newBox;
-          // Reset lost timer since skeleton is actively tracking
+          _lastKnownBoxes[matchedJersey]       = newBox;
           _framesSinceDetection[matchedJersey] = 0;
         }
       }
@@ -316,11 +295,11 @@ class CameraService {
     }
   }
 
-  Future<void> _runOCR(
-      InputImage inputImage, int imageWidth, int imageHeight) async {
+  Future<void> _runOCR(InputImage inputImage) async {
     final recognised = await _textRecognizer.processImage(inputImage);
 
     for (final block in recognised.blocks) {
+      // Clean common OCR mistakes
       String text = block.text
           .trim()
           .replaceAll(' ', '')
@@ -335,34 +314,42 @@ class CameraService {
           .replaceAll('B', '8')
           .replaceAll('g', '9');
 
-      final digitMatches = RegExp(r'\d{1,2}').allMatches(text);
-      if (digitMatches.isEmpty) continue;
+      // Ignore tiny detections — signs, scoreboards, poles
+      if (block.boundingBox.width < 15) continue;
 
-      for (final match in digitMatches) {
-        final number = match.group(0)!;
+      for (final jersey in _targetJerseys) {
+        // STRICT matching — exact match OR standalone number
+        // Prevents "29" matching inside "129" or locking onto "37"
+        final exactMatch      = text == jersey;
+        final standaloneMatch =
+            RegExp(r'(?<!\d)' + jersey + r'(?!\d)').hasMatch(text);
 
-        for (final jersey in _targetJerseys) {
-          if (number != jersey) continue;
+        if (!exactMatch && !standaloneMatch) continue;
 
-          _consecutiveDetections[jersey] =
-              (_consecutiveDetections[jersey] ?? 0) + 1;
+        _consecutiveDetections[jersey] =
+            (_consecutiveDetections[jersey] ?? 0) + 1;
 
-          if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
-            final bb = block.boundingBox;
+        if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
+          final bb = block.boundingBox;
 
-            // Sanity check — ignore very small detections (likely signs/poles)
-            // A real jersey number at any distance should be at least 15px wide
-            if (bb.width < 15) continue;
+          // Clamp bounding box to sensible player size
+          // Never smaller than 8% of frame, never larger than 25%
+          final boxWidth  = (bb.width  * 8).clamp(
+              _frameW * 0.08, _frameW * 0.25);
+          final boxHeight = (bb.height * 20).clamp(
+              _frameH * 0.30, _frameH * 0.80);
 
-            final expanded = Rect.fromLTWH(
-              bb.left  - bb.width  * 6,
-              bb.top   - bb.height * 12,
-              bb.width  * 13,
-              bb.height * 28,
-            );
+          // Centre box on torso — number is on chest so expand down
+          final expanded = Rect.fromCenter(
+            center: Offset(
+              bb.left + bb.width  / 2,
+              bb.top  + bb.height * 6,
+            ),
+            width:  boxWidth,
+            height: boxHeight,
+          );
 
-            _tryLockPlayer(jersey, expanded);
-          }
+          _tryLockPlayer(jersey, expanded);
         }
       }
     }
@@ -381,8 +368,8 @@ class CameraService {
         final h   = image.height.toDouble();
         final box = Rect.fromCenter(
           center: Offset(w / 2, h / 2),
-          width:  w * 0.3,
-          height: h * 0.6,
+          width:  w * 0.2,
+          height: h * 0.5,
         );
         _tryLockPlayer(matchedJersey, box);
       }
