@@ -107,9 +107,9 @@ class CameraService {
       _assignPosesToPlayers(poses);
 
       // 2. Ball detection every 2 frames
-      if (_frameCount % _ballEveryNFrames == 0) {
-        await ballTracker.processImage(inputImage);
-      }
+     //if (_frameCount % _ballEveryNFrames == 0) {
+       // await ballTracker.processImage(inputImage);
+      //}
 
       // 3. OCR every N frames
       if (_frameCount % _ocrEveryNFrames == 0) {

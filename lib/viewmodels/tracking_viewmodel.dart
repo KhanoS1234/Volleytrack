@@ -113,9 +113,9 @@ class TrackingViewModel extends ChangeNotifier {
     };
 
     // Ball + wrist proximity confirmed hit
-    _cameraService.onBallHitConfirmed = (jersey) {
-      _recordConfirmedHit(jersey, source: 'Ball');
-    };
+    //_cameraService.onBallHitConfirmed = (jersey) {
+      //_recordConfirmedHit(jersey, source: 'Ball');
+    //};
 
     await _cameraService.startCamera(players.map((p) => p.jersey).toList());
     _startTimer();
