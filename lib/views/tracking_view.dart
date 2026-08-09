@@ -46,6 +46,7 @@ class _TrackingViewState extends State<TrackingView>
   }
 
   Future<void> _endSession() async {
+  try {
     final results = await _vm.endSession();
     if (!mounted) return;
     Navigator.pushReplacement(
@@ -55,7 +56,17 @@ class _TrackingViewState extends State<TrackingView>
         players: widget.players,
       )),
     );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Error ending session: $e'),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
+}
 
   @override
   void dispose() {
