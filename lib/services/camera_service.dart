@@ -34,9 +34,13 @@ class CameraService {
   static const int _confirmationFrames = 2;
 
   final Map<String, int>   _consecutiveDetections = {};
-  final Map<String, Rect?> _lastKnownBoxes        = {};
-  final Map<String, int>   _framesSinceDetection  = {};
-  static const int _maxFramesWithoutDetection = 30;
+final Map<String, Rect?> _lastKnownBoxes        = {};
+final Map<String, int>   _framesSinceDetection  = {};
+final Map<String, bool>  _playerLockedPermanent = {};
+// Once locked, only lose player if gone for 5 full seconds
+static const int _maxFramesWithoutDetection = 150;
+// After initial lock, OCR only needed every 30 frames to confirm
+static const int _ocrAfterLockFrames = 30;
 
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
   Function(String jersey)?                   onPlayerLost;
@@ -53,6 +57,7 @@ class CameraService {
 
   Future<void> startCamera(List<String> targetJerseys) async {
     _targetJerseys = targetJerseys;
+    _playerLockedPermanent[jersey] = false;
 
     for (final jersey in targetJerseys) {
       poseAnalysers[jersey]          = PoseAnalyser();
@@ -112,19 +117,35 @@ class CameraService {
       //}
 
       // 3. OCR every N frames
-      if (_frameCount % _ocrEveryNFrames == 0) {
-        await _runOCR(inputImage);
+      final ocrInterval = (_playerLockedPermanent.values.any((v) => v))
+    ? _ocrAfterLockFrames
+    : _ocrEveryNFrames;
       }
 
       // Check lost players
-      for (final jersey in _targetJerseys) {
-        if ((_framesSinceDetection[jersey] ?? 0) > _maxFramesWithoutDetection) {
-          _consecutiveDetections[jersey] = 0;
-          onPlayerLost?.call(jersey);
-        } else if (_lastKnownBoxes[jersey] != null) {
-          onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
-        }
-      }
+for (final jersey in _targetJerseys) {
+  final framesSince = _framesSinceDetection[jersey] ?? 0;
+  final isLocked    = _playerLockedPermanent[jersey] ?? false;
+
+  if (isLocked) {
+    // Player was locked — use pose to maintain position
+    // Only mark lost after 5 seconds of no OCR re-read
+    if (framesSince > _maxFramesWithoutDetection) {
+      _playerLockedPermanent[jersey] = false;
+      _consecutiveDetections[jersey] = 0;
+      onPlayerLost?.call(jersey);
+    } else if (_lastKnownBoxes[jersey] != null) {
+      // Keep reporting last known position — pose tracking
+      // will update the skeleton even without OCR
+      onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
+    }
+  } else {
+    // Not yet locked — keep trying OCR
+    if (framesSince > 30) {
+      onPlayerLost?.call(jersey);
+    }
+  }
+}
 
     } catch (_) {
       // Continue silently
@@ -224,39 +245,40 @@ class CameraService {
   }
 
   Future<void> _runOCR(InputImage inputImage) async {
-    final recognised = await _textRecognizer.processImage(inputImage);
+  final recognised = await _textRecognizer.processImage(inputImage);
 
-    for (final block in recognised.blocks) {
-      String text = block.text
-          .trim()
-          .replaceAll(' ', '')
-          .replaceAll('\n', '')
-          .replaceAll('O', '0')
-          .replaceAll('I', '1')
-          .replaceAll('l', '1');
+  for (final block in recognised.blocks) {
+    String text = block.text
+        .trim()
+        .replaceAll(' ', '')
+        .replaceAll('\n', '')
+        .replaceAll('O', '0')
+        .replaceAll('I', '1')
+        .replaceAll('l', '1');
 
-      if (!RegExp(r'^\d{1,2}$').hasMatch(text)) continue;
+    if (!RegExp(r'^\d{1,2}$').hasMatch(text)) continue;
 
-      for (final jersey in _targetJerseys) {
-        if (text != jersey && !block.text.contains(jersey)) continue;
+    for (final jersey in _targetJerseys) {
+      if (text != jersey && !block.text.contains(jersey)) continue;
 
-        _consecutiveDetections[jersey] = (_consecutiveDetections[jersey] ?? 0) + 1;
-        _framesSinceDetection[jersey]  = 0;
+      _consecutiveDetections[jersey] = (_consecutiveDetections[jersey] ?? 0) + 1;
+      _framesSinceDetection[jersey]  = 0;
 
-        if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
-          final bb = block.boundingBox;
-          final expanded = Rect.fromLTWH(
-            bb.left  - bb.width  * 3,
-            bb.top   - bb.height * 8,
-            bb.width  * 7,
-            bb.height * 18,
-          );
-          _lastKnownBoxes[jersey] = expanded;
-          onPlayerDetected?.call(jersey, expanded);
-        }
+      if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
+        final bb = block.boundingBox;
+        final expanded = Rect.fromLTWH(
+          bb.left  - bb.width  * 6,
+          bb.top   - bb.height * 12,
+          bb.width  * 13,
+          bb.height * 28,
+        );
+        _lastKnownBoxes[jersey]        = expanded;
+        _playerLockedPermanent[jersey] = true;
+        onPlayerDetected?.call(jersey, expanded);
       }
     }
   }
+}
 
   InputImage? _buildInputImage(CameraImage image) {
     final camera = controller?.description;
