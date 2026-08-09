@@ -1,19 +1,19 @@
 import 'package:flutter/material.dart';
 
-/// Represents one player being tracked in a session
 class PlayerConfig {
   final String jersey;
   final String name;
   final Color color;
+  final List<String> photoPaths;
 
   const PlayerConfig({
     required this.jersey,
     required this.name,
     required this.color,
+    this.photoPaths = const [],
   });
 }
 
-/// Available colours for distinguishing players on screen
 class PlayerColors {
   static const List<Color> palette = [
     Color(0xFF00E87A), // green
@@ -23,7 +23,7 @@ class PlayerColors {
 
   static const List<String> labels = [
     'Player 1',
-    'Player 2', 
+    'Player 2',
     'Player 3',
   ];
 }

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'theme.dart';
-import 'views/setup_view.dart';
+import 'views/home_view.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,7 +21,7 @@ class VolleyTrackApp extends StatelessWidget {
     return MaterialApp(
       title: 'VolleyTrack',
       theme: buildTheme(),
-      home: const SetupView(),
+      home: const HomeView(),
       debugShowCheckedModeBanner: false,
     );
   }
