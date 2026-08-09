@@ -21,15 +21,16 @@ class CameraService {
     script: TextRecognitionScript.latin,
   );
 
-  // Ball tracker — runs alongside pose detection
   final BallTracker ballTracker = BallTracker();
 
-  final Map<String, PoseAnalyser> poseAnalysers = {};
+  final Map<String, PoseAnalyser> poseAnalysers  = {};
+  final Map<String, Pose?>        _latestPoses   = {};
 
   bool _isProcessing = false;
   List<String> _targetJerseys = [];
   int _frameCount = 0;
-  static const int _ocrEveryNFrames = 5;
+  static const int _ocrEveryNFrames  = 5;
+  static const int _ballEveryNFrames = 2;
   static const int _confirmationFrames = 2;
 
   final Map<String, int>   _consecutiveDetections = {};
@@ -37,34 +38,30 @@ class CameraService {
   final Map<String, int>   _framesSinceDetection  = {};
   static const int _maxFramesWithoutDetection = 30;
 
-  // Latest pose landmarks per player — used for ball proximity checks
-  final Map<String, Pose?> _latestPoses = {};
-
   Function(String jersey, Rect boundingBox)? onPlayerDetected;
-  Function(String jersey)? onPlayerLost;
+  Function(String jersey)?                   onPlayerLost;
   Function(List<PoseLandmark> landmarks, double confidence, String jersey)? onPoseUpdated;
-  Function(Offset position, double radius)? onBallDetected;
-  Function()? onBallLost;
-  // Called when ball + wrist proximity confirms a hit for a specific player
-  Function(String jersey)? onBallHitConfirmed;
+  Function(Offset position, double radius)?  onBallDetected;
+  Function()?                                onBallLost;
+  Function(String jersey)?                   onBallHitConfirmed;
 
   Future<void> initialise() async {
     _cameras = await availableCameras();
     if (_cameras.isEmpty) throw Exception('No cameras found');
+    ballTracker.initialise();
   }
 
   Future<void> startCamera(List<String> targetJerseys) async {
     _targetJerseys = targetJerseys;
 
     for (final jersey in targetJerseys) {
-      poseAnalysers[jersey]           = PoseAnalyser();
-      _consecutiveDetections[jersey]  = 0;
-      _lastKnownBoxes[jersey]         = null;
-      _framesSinceDetection[jersey]   = 0;
-      _latestPoses[jersey]            = null;
+      poseAnalysers[jersey]          = PoseAnalyser();
+      _consecutiveDetections[jersey] = 0;
+      _lastKnownBoxes[jersey]        = null;
+      _framesSinceDetection[jersey]  = 0;
+      _latestPoses[jersey]           = null;
     }
 
-    // Wire ball tracker callbacks
     ballTracker.onBallDetected = (pos, radius) {
       onBallDetected?.call(pos, radius);
       _checkBallHitProximity();
@@ -80,8 +77,9 @@ class CameraService {
 
     controller = CameraController(
       backCamera,
-      ResolutionPreset.veryHigh,
+      ResolutionPreset.high,
       enableAudio: false,
+      // Use bgra8888 for iOS
       imageFormatGroup: ImageFormatGroup.bgra8888,
     );
 
@@ -108,15 +106,9 @@ class CameraService {
       final poses = await _poseDetector.processImage(inputImage);
       _assignPosesToPlayers(poses);
 
-      // 2. Ball detection every 3 frames (lighter than OCR)
-      if (_frameCount % 3 == 0 && image.planes.isNotEmpty) {
-        await ballTracker.processFrame(
-          image.planes[0].bytes,
-          image.width,
-          image.height,
-          controller?.value.previewSize?.height ?? image.width.toDouble(),
-          controller?.value.previewSize?.width  ?? image.height.toDouble(),
-        );
+      // 2. Ball detection every 2 frames
+      if (_frameCount % _ballEveryNFrames == 0) {
+        await ballTracker.processImage(inputImage);
       }
 
       // 3. OCR every N frames
@@ -141,7 +133,6 @@ class CameraService {
     }
   }
 
-  /// Check if ball is near any tracked player's wrist — confirms a hit
   void _checkBallHitProximity() {
     if (!ballTracker.isTracking) return;
 
@@ -152,17 +143,14 @@ class CameraService {
       final rw = pose.landmarks[PoseLandmarkType.rightWrist];
       final lw = pose.landmarks[PoseLandmarkType.leftWrist];
 
-      // Check right wrist
       if (rw != null && rw.likelihood > 0.5) {
-        if (ballTracker.isBallNearWrist(rw.x, rw.y, 1280, 720)) {
+        if (ballTracker.isBallNearWrist(rw.x, rw.y)) {
           onBallHitConfirmed?.call(jersey);
           return;
         }
       }
-
-      // Check left wrist
       if (lw != null && lw.likelihood > 0.5) {
-        if (ballTracker.isBallNearWrist(lw.x, lw.y, 1280, 720)) {
+        if (ballTracker.isBallNearWrist(lw.x, lw.y)) {
           onBallHitConfirmed?.call(jersey);
           return;
         }
@@ -180,18 +168,18 @@ class CameraService {
       final poseCentreY = (leftHip.y + rightHip.y) / 2;
 
       String? matchedJersey;
-      double closestDistance = double.infinity;
+      double  closestDistance = double.infinity;
 
       for (final jersey in _targetJerseys) {
         final box = _lastKnownBoxes[jersey];
         if (box == null) continue;
         if (box.contains(Offset(poseCentreX, poseCentreY))) {
-          final boxCentreX = box.left + box.width / 2;
-          final boxCentreY = box.top  + box.height / 2;
-          final dist = _dist(poseCentreX, poseCentreY, boxCentreX, boxCentreY);
+          final cx   = box.left + box.width  / 2;
+          final cy   = box.top  + box.height / 2;
+          final dist = _dist(poseCentreX, poseCentreY, cx, cy);
           if (dist < closestDistance) {
-            closestDistance  = dist;
-            matchedJersey    = jersey;
+            closestDistance = dist;
+            matchedJersey   = jersey;
           }
         }
       }
@@ -200,9 +188,9 @@ class CameraService {
         for (final jersey in _targetJerseys) {
           final box = _lastKnownBoxes[jersey];
           if (box == null) continue;
-          final boxCentreX = box.left + box.width / 2;
-          final boxCentreY = box.top  + box.height / 2;
-          final dist = _dist(poseCentreX, poseCentreY, boxCentreX, boxCentreY);
+          final cx   = box.left + box.width  / 2;
+          final cy   = box.top  + box.height / 2;
+          final dist = _dist(poseCentreX, poseCentreY, cx, cy);
           if (dist < closestDistance) {
             closestDistance = dist;
             matchedJersey   = jersey;
@@ -212,9 +200,7 @@ class CameraService {
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
 
-      // Store latest pose for ball proximity checks
       _latestPoses[matchedJersey] = pose;
-
       poseAnalysers[matchedJersey]?.addPose(pose);
 
       final keyPoints = [
@@ -306,13 +292,14 @@ class CameraService {
     _lastKnownBoxes.clear();
     _framesSinceDetection.clear();
     _latestPoses.clear();
-    _frameCount    = 0;
-    _isProcessing  = false;
+    _frameCount   = 0;
+    _isProcessing = false;
   }
 
   Future<void> dispose() async {
     await stopCamera();
     await _poseDetector.close();
     await _textRecognizer.close();
+    await ballTracker.dispose();
   }
 }

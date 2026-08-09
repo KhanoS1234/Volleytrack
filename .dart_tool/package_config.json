@@ -158,6 +158,12 @@
       "languageVersion": "2.16"
     },
     {
+      "name": "google_mlkit_object_detection",
+      "rootUri": "file:///C:/Users/micha/AppData/Local/Pub/Cache/hosted/pub.dev/google_mlkit_object_detection-0.11.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.16"
+    },
+    {
       "name": "google_mlkit_pose_detection",
       "rootUri": "file:///C:/Users/micha/AppData/Local/Pub/Cache/hosted/pub.dev/google_mlkit_pose_detection-0.10.0",
       "packageUri": "lib/",

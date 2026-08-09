@@ -1,253 +1,149 @@
 import 'dart:ui' show Rect, Offset;
 import 'dart:math' as math;
-import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
+import 'package:google_mlkit_object_detection/google_mlkit_object_detection.dart';
+import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 
-/// Tracks a volleyball using colour and circular shape detection.
-/// Works by scanning camera frames for round objects matching
-/// typical volleyball colour ranges (white, yellow, blue panels).
+/// Tracks a volleyball using ML Kit Object Detection.
+/// Uses the base model to find round objects and filters
+/// by size and aspect ratio to find the ball.
 class BallTracker {
   // ── TUNING VARIABLES ─────────────────────────────────────────────────────
-  // Minimum radius of ball in pixels — increase if detecting small false objects
-  static const double _minRadius = 4.0;
-  // Maximum radius — prevents detecting large white areas as ball
-  static const double _maxRadius = 80.0;
-  // How many frames ball must appear before confirming detection
-  static const int _confirmFrames = 2;
-  // Seconds before ball is considered lost
-  static const double _lostSeconds = 1.5;
-  // How close (pixels) a player's wrist must be to ball to confirm a hit
-  static const double _hitProximityThreshold = 120.0;
+  // Minimum size of ball bounding box as fraction of frame width
+  static const double _minSizeFraction = 0.01;  // 1% of frame
+  // Maximum size — prevents detecting players as ball
+  static const double _maxSizeFraction = 0.25;  // 25% of frame
+  // Circularity — width/height ratio must be close to 1.0 for a round ball
+  static const double _minCircularity = 0.5;
+  static const double _maxCircularity = 2.0;
+  // Confidence threshold for object detection
+  static const double _minConfidence = 0.5;
+  // How close a wrist must be to ball centre (fraction of frame) to confirm hit
+  static const double _hitProximityFraction = 0.12;
   // ─────────────────────────────────────────────────────────────────────────
 
-  int _confirmCount = 0;
-  Offset? _lastBallPosition;
-  DateTime _lastDetected = DateTime(2000);
-  bool _ballVisible = false;
+  late final ObjectDetector _detector;
+  bool _isInitialised = false;
+  bool _isProcessing  = false;
 
-  // Ball position in normalised coords (0.0 - 1.0)
-  Offset? ballPosition;
-  double ballRadius = 0;
+  // Ball state
+  Offset? ballPosition; // normalised 0.0-1.0
+  double  ballRadius   = 0;
+  bool    isTracking   = false;
+
+  DateTime _lastDetected = DateTime(2000);
+  static const Duration _lostTimeout = Duration(milliseconds: 1500);
 
   // Callbacks
   Function(Offset position, double radius)? onBallDetected;
   Function()? onBallLost;
 
-  // Called when ball is near a player wrist — confirms a hit
-  Function(String jersey)? onHitConfirmed;
-
-  bool get isTracking => _ballVisible;
-
-  /// Process a camera frame to find the ball.
-  /// Takes raw NV21 bytes and image dimensions.
-  Future<void> processFrame(
-    Uint8List bytes,
-    int width,
-    int height,
-    double screenWidth,
-    double screenHeight,
-  ) async {
-    // Run detection in isolate to avoid blocking main thread
-    final result = await compute(
-      _detectBallInFrame,
-      _BallDetectionInput(
-        bytes: bytes,
-        width: width,
-        height: height,
-        minRadius: _minRadius,
-        maxRadius: _maxRadius,
-      ),
+  void initialise() {
+    final options = ObjectDetectorOptions(
+      mode: DetectionMode.stream,
+      classifyObjects: false,
+      multipleObjects: true,
     );
+    _detector = ObjectDetector(options: options);
+    _isInitialised = true;
+  }
 
-    if (result != null) {
-      _confirmCount++;
-      _lastDetected = DateTime.now();
+  Future<void> processImage(InputImage inputImage) async {
+    if (!_isInitialised || _isProcessing) return;
+    _isProcessing = true;
 
-      if (_confirmCount >= _confirmFrames) {
-        _ballVisible = true;
+    try {
+      final objects = await _detector.processImage(inputImage);
 
-        // Convert from image coords to normalised coords
-        ballPosition = Offset(
-          result.x / width,
-          result.y / height,
-        );
-        ballRadius = result.radius;
+      DetectedObject? bestCandidate;
+      double bestScore = 0;
 
-        onBallDetected?.call(ballPosition!, ballRadius);
-      }
-    } else {
-      // Check if ball is lost
-      final elapsed = DateTime.now().difference(_lastDetected).inMilliseconds;
-      if (elapsed > (_lostSeconds * 1000)) {
-        if (_ballVisible) {
-          _ballVisible = false;
-          _confirmCount = 0;
-          ballPosition = null;
-          onBallLost?.call();
+      for (final obj in objects) {
+        final bb = obj.boundingBox;
+
+        // Filter by size
+        final widthFraction  = bb.width  / 1280;
+        final heightFraction = bb.height / 720;
+
+        if (widthFraction  < _minSizeFraction || widthFraction  > _maxSizeFraction) continue;
+        if (heightFraction < _minSizeFraction || heightFraction > _maxSizeFraction) continue;
+
+        // Filter by circularity — ball should be roughly round
+        final circularity = bb.width / (bb.height == 0 ? 1 : bb.height);
+        if (circularity < _minCircularity || circularity > _maxCircularity) continue;
+
+        // Score based on how round and small it is
+        // Smaller = more likely to be ball than player
+        final roundnessScore = 1.0 - (circularity - 1.0).abs();
+        final sizeScore      = 1.0 - widthFraction;
+        final totalScore     = roundnessScore * 0.6 + sizeScore * 0.4;
+
+        if (totalScore > bestScore) {
+          bestScore      = totalScore;
+          bestCandidate  = obj;
         }
       }
+
+      if (bestCandidate != null) {
+        final bb = bestCandidate.boundingBox;
+
+        // Convert to normalised position
+        final centreX = (bb.left + bb.width  / 2) / 1280;
+        final centreY = (bb.top  + bb.height / 2) / 720;
+        final radius  = (bb.width + bb.height) / 4;
+
+        ballPosition   = Offset(centreX, centreY);
+        ballRadius     = radius;
+        isTracking     = true;
+        _lastDetected  = DateTime.now();
+
+        onBallDetected?.call(ballPosition!, radius);
+
+      } else {
+        // Check if ball has been lost too long
+        if (DateTime.now().difference(_lastDetected) > _lostTimeout) {
+          if (isTracking) {
+            isTracking   = false;
+            ballPosition = null;
+            onBallLost?.call();
+          }
+        }
+      }
+
+    } catch (_) {
+      // Continue silently
+    } finally {
+      _isProcessing = false;
     }
   }
 
-  /// Check if ball is near a player's wrist position
-  /// wristX/Y are in image pixel coordinates
-  bool isBallNearWrist(double wristX, double wristY, int imageWidth, int imageHeight) {
+  /// Check if ball is near a wrist position
+  /// wristX/Y are in image pixel coordinates (0-1280, 0-720)
+  bool isBallNearWrist(double wristX, double wristY) {
     if (ballPosition == null) return false;
 
-    final ballX = ballPosition!.dx * imageWidth;
-    final ballY = ballPosition!.dy * imageHeight;
+    final ballX = ballPosition!.dx * 1280;
+    final ballY = ballPosition!.dy * 720;
 
     final distance = math.sqrt(
-      math.pow(ballX - wristX, 2) + math.pow(ballY - wristY, 2),
+      math.pow(ballX - wristX, 2) +
+      math.pow(ballY - wristY, 2),
     );
 
-    return distance < _hitProximityThreshold;
+    // Threshold in pixels
+    final threshold = _hitProximityFraction * 1280;
+    return distance < threshold;
   }
 
   void reset() {
-    _confirmCount = 0;
-    _lastBallPosition = null;
-    _ballVisible = false;
+    isTracking   = false;
     ballPosition = null;
-    ballRadius = 0;
-  }
-}
-
-/// Data class for passing to isolate
-class _BallDetectionInput {
-  final Uint8List bytes;
-  final int width;
-  final int height;
-  final double minRadius;
-  final double maxRadius;
-
-  _BallDetectionInput({
-    required this.bytes,
-    required this.width,
-    required this.height,
-    required this.minRadius,
-    required this.maxRadius,
-  });
-}
-
-/// Result from ball detection
-class _BallDetectionResult {
-  final double x;
-  final double y;
-  final double radius;
-  _BallDetectionResult(this.x, this.y, this.radius);
-}
-
-/// Run in isolate — scans frame for circular objects matching volleyball colours
-_BallDetectionResult? _detectBallInFrame(_BallDetectionInput input) {
-  try {
-    final bytes = input.bytes;
-    final width  = input.width;
-    final height = input.height;
-
-    // Sample every 4th pixel for performance
-    const step = 4;
-
-    // Accumulate candidate bright/white regions
-    final List<_Candidate> candidates = [];
-
-    for (int y = 0; y < height; y += step) {
-      for (int x = 0; x < width; x += step) {
-        final idx = y * width + x;
-        if (idx >= bytes.length) continue;
-
-        // NV21 format: Y plane is luminance (brightness)
-        // BGRA format: 4 bytes per pixel — B, G, R, A
-final pixelIdx = (y * width + x) * 4;
-if (pixelIdx + 2 >= bytes.length) continue;
-final b = bytes[pixelIdx];
-final g = bytes[pixelIdx + 1];
-final r = bytes[pixelIdx + 2];
-// Calculate luminance from RGB values
-final luminance = (0.299 * r + 0.587 * g + 0.114 * b).toInt();
-
-        // Look for bright objects (white/yellow volleyball)
-        // Luminance > 180 = bright white/yellow
-        if (luminance > 180) {
-          candidates.add(_Candidate(x.toDouble(), y.toDouble(), luminance));
-        }
-      }
-    }
-
-    if (candidates.isEmpty) return null;
-
-    // Cluster nearby bright pixels into regions
-    final clusters = _clusterCandidates(candidates, 30.0);
-
-    // Find the most circular cluster of volleyball-like size
-    for (final cluster in clusters) {
-      final radius = cluster.estimatedRadius;
-      if (radius < input.minRadius || radius > input.maxRadius) continue;
-
-      // Check circularity — width/height ratio should be close to 1.0
-      final circularity = cluster.width / (cluster.height == 0 ? 1 : cluster.height);
-      if (circularity < 0.5 || circularity > 2.0) continue;
-
-      return _BallDetectionResult(cluster.centreX, cluster.centreY, radius);
-    }
-
-    return null;
-  } catch (_) {
-    return null;
-  }
-}
-
-class _Candidate {
-  final double x, y;
-  final int brightness;
-  _Candidate(this.x, this.y, this.brightness);
-}
-
-class _Cluster {
-  final List<_Candidate> points;
-
-  _Cluster(this.points);
-
-  double get centreX => points.map((p) => p.x).reduce((a, b) => a + b) / points.length;
-  double get centreY => points.map((p) => p.y).reduce((a, b) => a + b) / points.length;
-
-  double get minX => points.map((p) => p.x).reduce(math.min);
-  double get maxX => points.map((p) => p.x).reduce(math.max);
-  double get minY => points.map((p) => p.y).reduce(math.min);
-  double get maxY => points.map((p) => p.y).reduce(math.max);
-
-  double get width  => maxX - minX;
-  double get height => maxY - minY;
-
-  double get estimatedRadius => (width + height) / 4;
-}
-
-List<_Cluster> _clusterCandidates(List<_Candidate> candidates, double threshold) {
-  final List<_Cluster> clusters = [];
-  final used = List<bool>.filled(candidates.length, false);
-
-  for (int i = 0; i < candidates.length; i++) {
-    if (used[i]) continue;
-
-    final group = [candidates[i]];
-    used[i] = true;
-
-    for (int j = i + 1; j < candidates.length; j++) {
-      if (used[j]) continue;
-      final dx = candidates[i].x - candidates[j].x;
-      final dy = candidates[i].y - candidates[j].y;
-      if (math.sqrt(dx * dx + dy * dy) < threshold) {
-        group.add(candidates[j]);
-        used[j] = true;
-      }
-    }
-
-    if (group.length >= 3) {
-      clusters.add(_Cluster(group));
-    }
+    ballRadius   = 0;
+    _lastDetected = DateTime(2000);
   }
 
-  // Sort by cluster size — largest first
-  clusters.sort((a, b) => b.points.length.compareTo(a.points.length));
-  return clusters.take(5).toList();
+  Future<void> dispose() async {
+    if (_isInitialised) {
+      await _detector.close();
+    }
+  }
 }

@@ -18,6 +18,12 @@
 @import google_mlkit_commons;
 #endif
 
+#if __has_include(<google_mlkit_object_detection/GoogleMlKitObjectDetectionPlugin.h>)
+#import <google_mlkit_object_detection/GoogleMlKitObjectDetectionPlugin.h>
+#else
+@import google_mlkit_object_detection;
+#endif
+
 #if __has_include(<google_mlkit_pose_detection/GoogleMlKitPoseDetectionPlugin.h>)
 #import <google_mlkit_pose_detection/GoogleMlKitPoseDetectionPlugin.h>
 #else
@@ -47,6 +53,7 @@
 + (void)registerWithRegistry:(NSObject<FlutterPluginRegistry>*)registry {
   [CameraPlugin registerWithRegistrar:[registry registrarForPlugin:@"CameraPlugin"]];
   [GoogleMlKitCommonsPlugin registerWithRegistrar:[registry registrarForPlugin:@"GoogleMlKitCommonsPlugin"]];
+  [GoogleMlKitObjectDetectionPlugin registerWithRegistrar:[registry registrarForPlugin:@"GoogleMlKitObjectDetectionPlugin"]];
   [GoogleMlKitPoseDetectionPlugin registerWithRegistrar:[registry registrarForPlugin:@"GoogleMlKitPoseDetectionPlugin"]];
   [GoogleMlKitTextRecognitionPlugin registerWithRegistrar:[registry registrarForPlugin:@"GoogleMlKitTextRecognitionPlugin"]];
   [FPPSharePlusPlugin registerWithRegistrar:[registry registrarForPlugin:@"FPPSharePlusPlugin"]];
