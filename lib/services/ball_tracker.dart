@@ -9,7 +9,7 @@ import 'package:flutter/foundation.dart';
 class BallTracker {
   // ── TUNING VARIABLES ─────────────────────────────────────────────────────
   // Minimum radius of ball in pixels — increase if detecting small false objects
-  static const double _minRadius = 8.0;
+  static const double _minRadius = 4.0;
   // Maximum radius — prevents detecting large white areas as ball
   static const double _maxRadius = 80.0;
   // How many frames ball must appear before confirming detection
@@ -157,7 +157,14 @@ _BallDetectionResult? _detectBallInFrame(_BallDetectionInput input) {
         if (idx >= bytes.length) continue;
 
         // NV21 format: Y plane is luminance (brightness)
-        final luminance = bytes[idx];
+        // BGRA format: 4 bytes per pixel — B, G, R, A
+final pixelIdx = (y * width + x) * 4;
+if (pixelIdx + 2 >= bytes.length) continue;
+final b = bytes[pixelIdx];
+final g = bytes[pixelIdx + 1];
+final r = bytes[pixelIdx + 2];
+// Calculate luminance from RGB values
+final luminance = (0.299 * r + 0.587 * g + 0.114 * b).toInt();
 
         // Look for bright objects (white/yellow volleyball)
         // Luminance > 180 = bright white/yellow

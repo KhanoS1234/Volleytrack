@@ -82,7 +82,7 @@ class CameraService {
       backCamera,
       ResolutionPreset.veryHigh,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.nv21,
+      imageFormatGroup: ImageFormatGroup.bgra8888,
     );
 
     await controller!.initialize();
