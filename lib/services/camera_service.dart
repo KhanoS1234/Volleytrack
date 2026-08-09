@@ -1,8 +1,10 @@
+import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'dart:ui' show Rect, Size, Offset;
+import 'package:image/image.dart' as img;
 import 'pose_analyser.dart';
 import 'photo_matcher.dart';
 
@@ -28,7 +30,8 @@ class CameraService {
   List<String> _targetJerseys = [];
   int _frameCount = 0;
 
-  static const int _ocrEveryNFrames    = 1;
+  // Upscaling adds processing cost, so OCR runs slightly less often
+  static const int _ocrEveryNFrames    = 2;
   static const int _ocrAfterLockFrames = 45;
   static const int _photoEveryNFrames  = 5;
   static const int _confirmationFrames = 2;
@@ -36,9 +39,17 @@ class CameraService {
   static const double _maxReacquisitionDistance = 200000.0;
   static const int _relockConfirmationFrames = 3;
 
-  // Frame dimensions — used for bounding box clamping
   static const double _frameW = 1280.0;
   static const double _frameH = 720.0;
+
+  static const double _minDetectionY     = 0.15;
+  static const double _maxDetectionY     = 0.95;
+  // Lower minimum since upscaling makes small numbers detectable
+  static const double _minDetectionWidth = 6.0;
+  static const double _maxDetectionWidth = 250.0;
+
+  // 2x upscale makes a 15px number appear as 30px — much easier for OCR
+  static const double _upscaleFactor = 2.0;
 
   final Map<String, int>     _consecutiveDetections = {};
   final Map<String, Rect?>   _lastKnownBoxes        = {};
@@ -106,18 +117,20 @@ class CameraService {
     }
 
     try {
-      final inputImage = _buildInputImage(image);
-      if (inputImage == null) return;
+      // 1. Pose detection every frame — full resolution frame
+      final fullInputImage = _buildInputImage(
+        image.planes[0].bytes, image.width, image.height, image,
+      );
+      if (fullInputImage == null) return;
 
-      // 1. Pose detection every frame
-      final poses = await _poseDetector.processImage(inputImage);
+      final poses = await _poseDetector.processImage(fullInputImage);
       _assignPosesToPlayers(poses);
 
-      // 2. OCR
+      // 2. OCR — upscale first, then run ML Kit on the larger image
       final anyLocked   = _playerLockedPermanent.values.any((v) => v);
       final ocrInterval = anyLocked ? _ocrAfterLockFrames : _ocrEveryNFrames;
       if (_frameCount % ocrInterval == 0) {
-        await _runOCR(inputImage);
+        await _runUpscaledOCR(image);
       }
 
       // 3. Photo matching for unlocked players
@@ -158,8 +171,105 @@ class CameraService {
     }
   }
 
-  /// Validate and apply a new detection
-  /// Rejects detections that are too far from last known position
+  /// Upscales the frame in a background isolate (pure computation,
+  /// no platform channels needed), then runs ML Kit OCR on the main
+  /// thread using the upscaled bytes. This makes distant small jersey
+  /// numbers appear larger and more readable.
+  Future<void> _runUpscaledOCR(CameraImage image) async {
+    try {
+      // Step 1: Upscale in background isolate (safe - pure Dart)
+      final upscaled = await compute(_upscaleFrame, _UpscaleInput(
+        bytes:  image.planes[0].bytes,
+        width:  image.width,
+        height: image.height,
+        scale:  _upscaleFactor,
+      ));
+
+      if (upscaled == null) return;
+
+      // Step 2: Run ML Kit OCR on main thread with upscaled bytes
+      final upscaledInputImage = InputImage.fromBytes(
+        bytes: upscaled.bytes,
+        metadata: InputImageMetadata(
+          size: Size(upscaled.width.toDouble(), upscaled.height.toDouble()),
+          rotation: InputImageRotationValue.fromRawValue(
+                  controller?.description.sensorOrientation ?? 0) ??
+              InputImageRotation.rotation0deg,
+          format: InputImageFormat.bgra8888,
+          bytesPerRow: upscaled.width * 4,
+        ),
+      );
+
+      final recognised = await _textRecognizer.processImage(upscaledInputImage);
+      _processOCRResults(recognised, image.width.toDouble(), image.height.toDouble());
+
+    } catch (_) {
+      // Continue silently — next frame will retry
+    }
+  }
+
+  void _processOCRResults(
+      RecognizedText recognised, double origWidth, double origHeight) {
+    for (final block in recognised.blocks) {
+      final bb = block.boundingBox;
+
+      // Scale coordinates back down to original frame size
+      final origLeft   = bb.left   / _upscaleFactor;
+      final origTop    = bb.top    / _upscaleFactor;
+      final origBWidth = bb.width  / _upscaleFactor;
+      final origBHeight= bb.height / _upscaleFactor;
+
+      final relativeY      = origTop / origHeight;
+      final relativeBottom = (origTop + origBHeight) / origHeight;
+
+      if (relativeY < _minDetectionY) continue;
+      if (relativeBottom > _maxDetectionY) continue;
+      if (origBWidth < _minDetectionWidth) continue;
+      if (origBWidth > _maxDetectionWidth) continue;
+
+      String text = block.text
+          .trim()
+          .replaceAll(' ', '')
+          .replaceAll('\n', '')
+          .replaceAll('O', '0')
+          .replaceAll('o', '0')
+          .replaceAll('I', '1')
+          .replaceAll('l', '1')
+          .replaceAll('i', '1')
+          .replaceAll('S', '5')
+          .replaceAll('G', '6')
+          .replaceAll('B', '8')
+          .replaceAll('g', '9');
+
+      for (final jersey in _targetJerseys) {
+        final exactMatch      = text == jersey;
+        final standaloneMatch =
+            RegExp(r'(?<!\d)' + jersey + r'(?!\d)').hasMatch(text);
+
+        if (!exactMatch && !standaloneMatch) continue;
+
+        _consecutiveDetections[jersey] =
+            (_consecutiveDetections[jersey] ?? 0) + 1;
+
+        if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
+          final boxWidth  = (origBWidth  * 8).clamp(_frameW * 0.06, _frameW * 0.25);
+          final boxHeight = (origBHeight * 20).clamp(_frameH * 0.25, _frameH * 0.80);
+
+          final expanded = Rect.fromCenter(
+            center: Offset(
+              origLeft + origBWidth  / 2,
+              origTop  + origBHeight * 6,
+            ),
+            width:  boxWidth,
+            height: boxHeight,
+          );
+
+          _tryLockPlayer(jersey, expanded);
+        }
+      }
+    }
+  }
+
   void _tryLockPlayer(String jersey, Rect detectedBox) {
     final isLocked       = _playerLockedPermanent[jersey] ?? false;
     final lastBox        = _lastKnownBoxes[jersey];
@@ -169,7 +279,6 @@ class CameraService {
     );
 
     if (isLocked && lastBox != null) {
-      // Already locked — only accept detections near last known position
       final lastCentre = Offset(
         lastBox.left + lastBox.width  / 2,
         lastBox.top  + lastBox.height / 2,
@@ -178,30 +287,22 @@ class CameraService {
         detectedCentre.dx, detectedCentre.dy,
         lastCentre.dx,     lastCentre.dy,
       );
-
-      if (dist > _maxReacquisitionDistance) return; // too far — reject
-
+      if (dist > _maxReacquisitionDistance) return;
       _lastKnownBoxes[jersey]       = detectedBox;
       _framesSinceDetection[jersey] = 0;
       return;
     }
 
-    // Not locked — require stable candidate position before locking
     final lastCandidate = _relockCandidatePos[jersey];
-
     if (lastCandidate != null) {
       final dist = _squaredDistance(
         detectedCentre.dx, detectedCentre.dy,
         lastCandidate.dx,  lastCandidate.dy,
       );
-
       if (dist < _maxReacquisitionDistance) {
         _relockCandidateCount[jersey] =
             (_relockCandidateCount[jersey] ?? 0) + 1;
-
-        if ((_relockCandidateCount[jersey] ?? 0) >=
-            _relockConfirmationFrames) {
-          // Stable detection confirmed — lock on
+        if ((_relockCandidateCount[jersey] ?? 0) >= _relockConfirmationFrames) {
           _lastKnownBoxes[jersey]        = detectedBox;
           _playerLockedPermanent[jersey] = true;
           _consecutiveDetections[jersey] = 0;
@@ -211,7 +312,6 @@ class CameraService {
           onPlayerDetected?.call(jersey, detectedBox);
         }
       } else {
-        // Candidate jumped — reset
         _relockCandidateCount[jersey] = 1;
         _relockCandidatePos[jersey]   = detectedCentre;
       }
@@ -263,7 +363,6 @@ class CameraService {
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
 
-      // Update box to follow skeleton hips when locked
       if (_playerLockedPermanent[matchedJersey] == true) {
         final currentBox = _lastKnownBoxes[matchedJersey];
         if (currentBox != null) {
@@ -295,66 +394,6 @@ class CameraService {
     }
   }
 
-  Future<void> _runOCR(InputImage inputImage) async {
-    final recognised = await _textRecognizer.processImage(inputImage);
-
-    for (final block in recognised.blocks) {
-      // Clean common OCR mistakes
-      String text = block.text
-          .trim()
-          .replaceAll(' ', '')
-          .replaceAll('\n', '')
-          .replaceAll('O', '0')
-          .replaceAll('o', '0')
-          .replaceAll('I', '1')
-          .replaceAll('l', '1')
-          .replaceAll('i', '1')
-          .replaceAll('S', '5')
-          .replaceAll('G', '6')
-          .replaceAll('B', '8')
-          .replaceAll('g', '9');
-
-      // Ignore tiny detections — signs, scoreboards, poles
-      if (block.boundingBox.width < 15) continue;
-
-      for (final jersey in _targetJerseys) {
-        // STRICT matching — exact match OR standalone number
-        // Prevents "29" matching inside "129" or locking onto "37"
-        final exactMatch      = text == jersey;
-        final standaloneMatch =
-            RegExp(r'(?<!\d)' + jersey + r'(?!\d)').hasMatch(text);
-
-        if (!exactMatch && !standaloneMatch) continue;
-
-        _consecutiveDetections[jersey] =
-            (_consecutiveDetections[jersey] ?? 0) + 1;
-
-        if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
-          final bb = block.boundingBox;
-
-          // Clamp bounding box to sensible player size
-          // Never smaller than 8% of frame, never larger than 25%
-          final boxWidth  = (bb.width  * 8).clamp(
-              _frameW * 0.08, _frameW * 0.25);
-          final boxHeight = (bb.height * 20).clamp(
-              _frameH * 0.30, _frameH * 0.80);
-
-          // Centre box on torso — number is on chest so expand down
-          final expanded = Rect.fromCenter(
-            center: Offset(
-              bb.left + bb.width  / 2,
-              bb.top  + bb.height * 6,
-            ),
-            width:  boxWidth,
-            height: boxHeight,
-          );
-
-          _tryLockPlayer(jersey, expanded);
-        }
-      }
-    }
-  }
-
   Future<void> _runPhotoMatch(CameraImage image) async {
     try {
       final bytes         = image.planes[0].bytes;
@@ -378,7 +417,8 @@ class CameraService {
     }
   }
 
-  InputImage? _buildInputImage(CameraImage image) {
+  InputImage? _buildInputImage(
+      Uint8List bytes, int width, int height, CameraImage image) {
     final camera = controller?.description;
     if (camera == null) return null;
 
@@ -394,7 +434,7 @@ class CameraService {
     return InputImage.fromBytes(
       bytes: plane.bytes,
       metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
+        size: Size(width.toDouble(), height.toDouble()),
         rotation: rotation,
         format: format,
         bytesPerRow: plane.bytesPerRow,
@@ -431,5 +471,66 @@ class CameraService {
     await stopCamera();
     await _poseDetector.close();
     await _textRecognizer.close();
+  }
+}
+
+// ─── Upscaling isolate (pure computation, safe to run in background) ──────
+
+class _UpscaleInput {
+  final Uint8List bytes;
+  final int width;
+  final int height;
+  final double scale;
+
+  _UpscaleInput({
+    required this.bytes,
+    required this.width,
+    required this.height,
+    required this.scale,
+  });
+}
+
+class _UpscaleResult {
+  final Uint8List bytes;
+  final int width;
+  final int height;
+
+  _UpscaleResult({
+    required this.bytes,
+    required this.width,
+    required this.height,
+  });
+}
+
+/// Runs in a background isolate — pure image processing, no platform
+/// channels, so this is safe to run off the main thread.
+_UpscaleResult? _upscaleFrame(_UpscaleInput input) {
+  try {
+    final image = img.Image.fromBytes(
+      width:  input.width,
+      height: input.height,
+      bytes:  input.bytes.buffer,
+      order:  img.ChannelOrder.bgra,
+    );
+
+    final newWidth  = (input.width  * input.scale).toInt();
+    final newHeight = (input.height * input.scale).toInt();
+
+    final upscaled = img.copyResize(
+      image,
+      width: newWidth,
+      height: newHeight,
+      interpolation: img.Interpolation.cubic,
+    );
+
+    final bytes = upscaled.getBytes(order: img.ChannelOrder.bgra);
+
+    return _UpscaleResult(
+      bytes:  Uint8List.fromList(bytes),
+      width:  newWidth,
+      height: newHeight,
+    );
+  } catch (_) {
+    return null;
   }
 }
