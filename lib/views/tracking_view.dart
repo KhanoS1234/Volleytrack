@@ -463,6 +463,20 @@ class _TrackingViewState extends State<TrackingView>
             return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // DEBUG — proves the live value the detection loop is
+                // actually reading right now. Remove once confirmed working.
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    'LIVE: minWidth=${settings.minDetectionWidth.toStringAsFixed(1)}px  '
+                    'confirmFrames=${settings.confirmationFrames}',
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 9,
+                      color: VTColors.pointGreen,
+                    ),
+                  ),
+                ),
+
                 // Slider 1 — distance sensitivity
                 Row(
                   children: [

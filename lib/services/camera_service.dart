@@ -431,7 +431,14 @@ class CameraService {
 
       if (relativeY < _minDetectionY) continue;
       if (relativeBottom > _maxDetectionY) continue;
-      if (bb.width < _settings.minDetectionWidth) continue;
+
+      // DEBUG — prove the live slider value is actually being read here.
+      // Remove once confirmed working.
+      if (bb.width < _settings.minDetectionWidth) {
+        debugPrint('OCR REJECTED "${block.text}" — width ${bb.width.toStringAsFixed(1)}px '
+            '< current threshold ${_settings.minDetectionWidth.toStringAsFixed(1)}px');
+        continue;
+      }
       if (bb.width > _maxDetectionWidth) continue;
 
       String text = block.text
