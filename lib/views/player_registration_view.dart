@@ -28,7 +28,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
 
   List<String> _photoPaths = [];
 
-  // Guide text for each photo
   final List<Map<String, String>> _photoGuides = [
     {'distance': '1-2m',  'icon': '🔍', 'label': 'Close up'},
     {'distance': '4-6m',  'icon': '📏', 'label': 'Medium distance'},
@@ -42,6 +41,15 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
       _jerseyController.text = widget.existing!.jersey;
       _nameController.text   = widget.existing!.name;
       _photoPaths = List.from(widget.existing!.photoPaths);
+
+      // DEBUG — verify what paths we received and whether files exist
+      debugPrint('=== EDIT PLAYER DEBUG ===');
+      debugPrint('Received ${_photoPaths.length} photo paths:');
+      for (final p in _photoPaths) {
+        final exists = File(p).existsSync();
+        debugPrint('  Path: $p — exists on disk: $exists');
+      }
+      debugPrint('=========================');
     }
     _initCamera();
   }
@@ -74,23 +82,62 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
     try {
       final xFile = await _cameraController!.takePicture();
 
-      // Save to app documents directory
+      // Use a persistent, app-specific subfolder so files aren't
+      // accidentally cleaned up by the OS or confused with temp files
       final docsDir = await getApplicationDocumentsDirectory();
+      final photosDir = Directory(path.join(docsDir.path, 'jersey_photos'));
+      if (!await photosDir.exists()) {
+        await photosDir.create(recursive: true);
+      }
+
       final jersey  = _jerseyController.text.trim().isEmpty
           ? 'player'
           : _jerseyController.text.trim();
       final fileName =
           'jersey_${jersey}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedPath = path.join(docsDir.path, fileName);
+      final savedPath = path.join(photosDir.path, fileName);
 
-      await File(xFile.path).copy(savedPath);
+      // Copy from temp camera location to our persistent location
+      final savedFile = await File(xFile.path).copy(savedPath);
+
+      // DEBUG — verify the copy actually succeeded
+      final verifyExists = await savedFile.exists();
+      final fileSize = verifyExists ? await savedFile.length() : 0;
+      debugPrint('=== PHOTO CAPTURE DEBUG ===');
+      debugPrint('Temp file: ${xFile.path}');
+      debugPrint('Saved to: $savedPath');
+      debugPrint('File exists after copy: $verifyExists');
+      debugPrint('File size: $fileSize bytes');
+      debugPrint('===========================');
+
+      if (!verifyExists || fileSize == 0) {
+        setState(() => _capturing = false);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Photo save failed — please try again'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
 
       setState(() {
         _photoPaths.add(savedPath);
         _capturing = false;
       });
     } catch (e) {
+      debugPrint('=== PHOTO CAPTURE ERROR === $e');
       setState(() => _capturing = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error saving photo: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -134,6 +181,34 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
     super.dispose();
   }
 
+  /// Builds a thumbnail, showing a visible broken-image state if the
+  /// file is missing from disk instead of failing silently.
+  Widget _buildThumbnail(String filePath) {
+    final file = File(filePath);
+    final exists = file.existsSync();
+
+    if (!exists) {
+      return Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: VTColors.dangerRed.withValues(alpha: 0.5)),
+          color: VTColors.dangerRed.withValues(alpha: 0.1),
+        ),
+        child: const Center(
+          child: Icon(Icons.broken_image, color: VTColors.dangerRed, size: 24),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: VTColors.pointGreen.withValues(alpha: 0.4)),
+        image: DecorationImage(image: FileImage(file), fit: BoxFit.cover),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -157,7 +232,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Jersey number + name
                   Row(
                     children: [
                       Expanded(
@@ -229,7 +303,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
 
                   const SizedBox(height: 16),
 
-                  // Photo guide steps
                   ...List.generate(3, (i) {
                     final taken  = i < _photoPaths.length;
                     final active = i == _photoPaths.length;
@@ -256,7 +329,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                       ),
                       child: Row(
                         children: [
-                          // Status icon
                           Container(
                             width: 36,
                             height: 36,
@@ -276,9 +348,7 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                                       style: const TextStyle(fontSize: 16)),
                             ),
                           ),
-
                           const SizedBox(width: 12),
-
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -304,8 +374,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                               ],
                             ),
                           ),
-
-                          // Remove button for taken photos
                           if (taken)
                             IconButton(
                               icon: const Icon(Icons.close,
@@ -321,7 +389,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
 
                   const SizedBox(height: 16),
 
-                  // Camera preview
                   if (_photoPaths.length < 3) ...[
                     _Label(
                         'Camera — ${_photoGuides[_photoPaths.length]['label']} (${_photoGuides[_photoPaths.length]['distance']})'),
@@ -355,8 +422,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                                 ],
                               ),
                             ),
-
-                          // Guide overlay — centre box for jersey number
                           Center(
                             child: Container(
                               width: 120,
@@ -384,7 +449,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
 
                     const SizedBox(height: 12),
 
-                    // Capture button
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
@@ -418,7 +482,7 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                     ),
                   ],
 
-                  // Thumbnails of taken photos
+                  // Thumbnails — now with broken-file detection
                   if (_photoPaths.isNotEmpty) ...[
                     const SizedBox(height: 16),
                     _Label('Captured Photos'),
@@ -431,16 +495,7 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                                 right:
                                     entry.key < _photoPaths.length - 1 ? 8 : 0),
                             height: 80,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                  color:
-                                      VTColors.pointGreen.withValues(alpha: 0.4)),
-                              image: DecorationImage(
-                                image: FileImage(File(entry.value)),
-                                fit: BoxFit.cover,
-                              ),
-                            ),
+                            child: _buildThumbnail(entry.value),
                           ),
                         );
                       }).toList(),
@@ -453,7 +508,6 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
             ),
           ),
 
-          // Save button
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
             child: SizedBox(
