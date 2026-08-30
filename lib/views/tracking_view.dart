@@ -5,6 +5,7 @@ import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../theme.dart';
 import '../models/game_event.dart';
 import '../models/player_config.dart';
+import '../services/detection_settings.dart';
 import '../viewmodels/tracking_viewmodel.dart';
 import 'multi_stats_view.dart';
 
@@ -33,7 +34,9 @@ class _TrackingViewState extends State<TrackingView>
       duration: const Duration(seconds: 3),
     )..repeat();
     _initialise();
-    _vm.addListener(() { if (mounted) setState(() {}); });
+    _vm.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   Future<void> _initialise() async {
@@ -41,32 +44,26 @@ class _TrackingViewState extends State<TrackingView>
       await _vm.initialise();
       setState(() => _isInitialising = false);
     } catch (e) {
-      setState(() { _isInitialising = false; _error = e.toString(); });
+      setState(() {
+        _isInitialising = false;
+        _error = e.toString();
+      });
     }
   }
 
   Future<void> _endSession() async {
-  try {
     final results = await _vm.endSession();
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => MultiStatsView(
-        playerStats: results,
-        players: widget.players,
-      )),
-    );
-  } catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Error ending session: $e'),
-        backgroundColor: Colors.red,
-        duration: const Duration(seconds: 5),
+      MaterialPageRoute(
+        builder: (_) => MultiStatsView(
+          playerStats: results,
+          players: widget.players,
+        ),
       ),
     );
   }
-}
 
   @override
   void dispose() {
@@ -108,20 +105,27 @@ class _TrackingViewState extends State<TrackingView>
                   AnimatedBuilder(
                     animation: _scanController,
                     builder: (_, __) => Positioned(
-                      top: _scanController.value * MediaQuery.of(context).size.height * 0.60,
-                      left: 0, right: 0,
-                      child: Container(height: 2,
-                        decoration: BoxDecoration(gradient: LinearGradient(colors: [
-                          Colors.transparent,
-                          VTColors.blockCyan.withValues(alpha: 0.6),
-                          Colors.transparent,
-                        ]))),
+                      top: _scanController.value *
+                          MediaQuery.of(context).size.height *
+                          0.60,
+                      left: 0,
+                      right: 0,
+                      child: Container(
+                        height: 2,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(colors: [
+                            Colors.transparent,
+                            VTColors.blockCyan.withValues(alpha: 0.6),
+                            Colors.transparent,
+                          ]),
+                        ),
+                      ),
                     ),
                   ),
 
                 // Corner brackets
-                _corner(top: true,  left: true),
-                _corner(top: true,  left: false),
+                _corner(top: true, left: true),
+                _corner(top: true, left: false),
                 _corner(top: false, left: true),
                 _corner(top: false, left: false),
 
@@ -130,6 +134,10 @@ class _TrackingViewState extends State<TrackingView>
 
                 // HUD top bar
                 _buildHUD(),
+
+                // Jersey sensitivity slider — DEVELOPMENT ONLY
+                // Remove once optimal value is found and hardcoded
+                _buildSensitivitySlider(),
 
                 // Event flash
                 if (_vm.showFlash) _buildFlash(),
@@ -174,11 +182,11 @@ class _TrackingViewState extends State<TrackingView>
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                     child: Column(
                       children: [
-                        // Selected player indicator
                         Row(
                           children: [
                             Container(
-                              width: 8, height: 8,
+                              width: 8,
+                              height: 8,
                               decoration: BoxDecoration(
                                 color: _vm.selectedPlayer.color,
                                 shape: BoxShape.circle,
@@ -198,11 +206,29 @@ class _TrackingViewState extends State<TrackingView>
                         ),
                         const SizedBox(height: 6),
                         Row(children: [
-                          Expanded(child: _manualBtn('💥', 'HIT',   VTColors.spikeGold,  () => _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.hit))),
+                          Expanded(
+                              child: _manualBtn(
+                                  '💥',
+                                  'HIT',
+                                  VTColors.spikeGold,
+                                  () => _vm.recordEvent(
+                                      _vm.selectedPlayer.jersey, EventType.hit))),
                           const SizedBox(width: 8),
-                          Expanded(child: _manualBtn('🤚', 'BLOCK', VTColors.blockCyan,  () => _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.block))),
+                          Expanded(
+                              child: _manualBtn(
+                                  '🤚',
+                                  'BLOCK',
+                                  VTColors.blockCyan,
+                                  () => _vm.recordEvent(
+                                      _vm.selectedPlayer.jersey, EventType.block))),
                           const SizedBox(width: 8),
-                          Expanded(child: _manualBtn('✅', 'POINT', VTColors.pointGreen, () => _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.point))),
+                          Expanded(
+                              child: _manualBtn(
+                                  '✅',
+                                  'POINT',
+                                  VTColors.pointGreen,
+                                  () => _vm.recordEvent(
+                                      _vm.selectedPlayer.jersey, EventType.point))),
                         ]),
                       ],
                     ),
@@ -216,12 +242,17 @@ class _TrackingViewState extends State<TrackingView>
                       child: OutlinedButton(
                         onPressed: _endSession,
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: VTColors.dangerRed, width: 1.5),
+                          side: const BorderSide(
+                              color: VTColors.dangerRed, width: 1.5),
                           padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
                         ),
                         child: Text('END SESSION',
-                          style: GoogleFonts.bebasNeue(fontSize: 16, letterSpacing: 2, color: VTColors.dangerRed)),
+                            style: GoogleFonts.bebasNeue(
+                                fontSize: 16,
+                                letterSpacing: 2,
+                                color: VTColors.dangerRed)),
                       ),
                     ),
                   ),
@@ -236,18 +267,27 @@ class _TrackingViewState extends State<TrackingView>
 
   Widget _buildCamera() {
     if (_isInitialising) {
-      return Container(color: VTColors.courtBlue,
-        child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      return Container(
+        color: VTColors.courtBlue,
+        child: Center(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
           const CircularProgressIndicator(color: VTColors.blockCyan),
           const SizedBox(height: 16),
-          Text('Starting camera...', style: GoogleFonts.inter(color: VTColors.textDim)),
-        ])));
+          Text('Starting camera...',
+              style: GoogleFonts.inter(color: VTColors.textDim)),
+        ])),
+      );
     }
-    if (_error != null || _vm.cameraController == null || !_vm.cameraController!.value.isInitialized) {
-      return Container(color: VTColors.courtBlue,
-        child: Center(child: Text('Camera unavailable\nUse manual buttons below',
-          textAlign: TextAlign.center,
-          style: GoogleFonts.inter(color: VTColors.textDim))));
+    if (_error != null ||
+        _vm.cameraController == null ||
+        !_vm.cameraController!.value.isInitialized) {
+      return Container(
+        color: VTColors.courtBlue,
+        child: Center(
+            child: Text('Camera unavailable\nUse manual buttons below',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(color: VTColors.textDim))),
+      );
     }
     return CameraPreview(_vm.cameraController!);
   }
@@ -258,18 +298,20 @@ class _TrackingViewState extends State<TrackingView>
 
     final screenSize = MediaQuery.of(context).size;
     final viewHeight = screenSize.height * 0.60;
-    final viewWidth  = screenSize.width;
+    final viewWidth = screenSize.width;
 
-    final scaleX = viewWidth  / (_vm.cameraController?.value.previewSize?.height ?? viewWidth);
-    final scaleY = viewHeight / (_vm.cameraController?.value.previewSize?.width  ?? viewHeight);
+    final scaleX = viewWidth /
+        (_vm.cameraController?.value.previewSize?.height ?? viewWidth);
+    final scaleY = viewHeight /
+        (_vm.cameraController?.value.previewSize?.width ?? viewHeight);
 
     final visible = _vm.playerVisible[p.jersey] ?? false;
-    final color   = visible ? p.color : VTColors.spikeGold;
+    final color = visible ? p.color : VTColors.spikeGold;
 
     return Positioned(
-      left:   (box.left  * scaleX).clamp(0, viewWidth  - 20),
-      top:    (box.top   * scaleY).clamp(0, viewHeight - 20),
-      width:  (box.width * scaleX).clamp(20, viewWidth),
+      left: (box.left * scaleX).clamp(0, viewWidth - 20),
+      top: (box.top * scaleY).clamp(0, viewHeight - 20),
+      width: (box.width * scaleX).clamp(20, viewWidth),
       height: (box.height * scaleY).clamp(20, viewHeight),
       child: Stack(clipBehavior: Clip.none, children: [
         AnimatedContainer(
@@ -281,17 +323,21 @@ class _TrackingViewState extends State<TrackingView>
           ),
         ),
         Positioned(
-          top: -22, left: -2,
+          top: -22,
+          left: -2,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
               color: color,
               borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4), topRight: Radius.circular(4)),
+                  topLeft: Radius.circular(4), topRight: Radius.circular(4)),
             ),
             child: Text(
               '#${p.jersey} · ${visible ? "ON" : "LOST"}',
-              style: GoogleFonts.jetBrainsMono(fontSize: 9, fontWeight: FontWeight.w600, color: Colors.black),
+              style: GoogleFonts.jetBrainsMono(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black),
             ),
           ),
         ),
@@ -302,38 +348,43 @@ class _TrackingViewState extends State<TrackingView>
   Widget _buildHUD() {
     return Positioned(
       top: MediaQuery.of(context).padding.top + 12,
-      left: 16, right: 16,
+      left: 16,
+      right: 16,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Player lock indicators
           Row(
-            children: widget.players.map((p) => Container(
-              margin: const EdgeInsets.only(right: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.55),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: p.color.withValues(alpha: 0.4)),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Container(
-                  width: 6, height: 6,
-                  decoration: BoxDecoration(
-                    color: (_vm.playerLocked[p.jersey] ?? false)
-                        ? ((_vm.playerVisible[p.jersey] ?? false) ? p.color : VTColors.spikeGold)
-                        : VTColors.dangerRed,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Text('#${p.jersey}',
-                  style: GoogleFonts.bebasNeue(fontSize: 14, color: p.color, height: 1)),
-              ]),
-            )).toList(),
+            children: widget.players
+                .map((p) => Container(
+                      margin: const EdgeInsets.only(right: 6),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: p.color.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: (_vm.playerLocked[p.jersey] ?? false)
+                                ? ((_vm.playerVisible[p.jersey] ?? false)
+                                    ? p.color
+                                    : VTColors.spikeGold)
+                                : VTColors.dangerRed,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Text('#${p.jersey}',
+                            style: GoogleFonts.bebasNeue(
+                                fontSize: 14, color: p.color, height: 1)),
+                      ]),
+                    ))
+                .toList(),
           ),
-
-          // Timer
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
@@ -342,11 +393,15 @@ class _TrackingViewState extends State<TrackingView>
               border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.2)),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Container(width: 6, height: 6,
-                decoration: const BoxDecoration(color: VTColors.dangerRed, shape: BoxShape.circle)),
+              Container(
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                      color: VTColors.dangerRed, shape: BoxShape.circle)),
               const SizedBox(width: 5),
               Text(_vm.formattedTime,
-                style: GoogleFonts.jetBrainsMono(fontSize: 13, color: VTColors.netWhite)),
+                  style: GoogleFonts.jetBrainsMono(
+                      fontSize: 13, color: VTColors.netWhite)),
             ]),
           ),
         ],
@@ -354,9 +409,77 @@ class _TrackingViewState extends State<TrackingView>
     );
   }
 
+  /// Live jersey number recognition sensitivity slider.
+  /// DEVELOPMENT ONLY — remove once optimal value is found and hardcoded.
+  Widget _buildSensitivitySlider() {
+    final settings = DetectionSettings();
+
+    return Positioned(
+      left: 16,
+      right: 16,
+      bottom: 8,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.65),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: VTColors.spikeGold.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.tune, color: VTColors.spikeGold, size: 16),
+            const SizedBox(width: 8),
+            Text('Jersey Sensitivity',
+                style: GoogleFonts.inter(fontSize: 11, color: VTColors.textDim)),
+            Expanded(
+              child: SliderTheme(
+                data: SliderThemeData(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                  activeTrackColor: VTColors.spikeGold,
+                  inactiveTrackColor: VTColors.surface2,
+                  thumbColor: VTColors.spikeGold,
+                ),
+                child: StatefulBuilder(
+                  builder: (context, setSliderState) {
+                    return Slider(
+                      value: settings.minDetectionWidth,
+                      min: DetectionSettings.minAllowed,
+                      max: DetectionSettings.maxAllowed,
+                      onChanged: (v) {
+                        settings.setMinDetectionWidth(v);
+                        setSliderState(() {});
+                      },
+                    );
+                  },
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 50,
+              child: Text(
+                settings.minDetectionWidth < 12
+                    ? 'FAR'
+                    : settings.minDetectionWidth > 25
+                        ? 'CLOSE'
+                        : 'MID',
+                textAlign: TextAlign.right,
+                style: GoogleFonts.bebasNeue(
+                  fontSize: 14,
+                  letterSpacing: 1,
+                  color: VTColors.spikeGold,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildFlash() {
-    final type    = _vm.flashType;
-    final jersey  = _vm.flashJersey;
+    final type = _vm.flashType;
+    final jersey = _vm.flashJersey;
     if (type == null || jersey == null) return const SizedBox.shrink();
 
     final player = widget.players.firstWhere(
@@ -365,7 +488,7 @@ class _TrackingViewState extends State<TrackingView>
     );
 
     final styles = {
-      EventType.hit:   {'label': '💥 HIT',   'color': VTColors.spikeGold},
+      EventType.hit: {'label': '💥 HIT', 'color': VTColors.spikeGold},
       EventType.block: {'label': '🤚 BLOCK', 'color': VTColors.blockCyan},
       EventType.point: {'label': '✅ POINT', 'color': VTColors.pointGreen},
     };
@@ -382,10 +505,14 @@ class _TrackingViewState extends State<TrackingView>
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Text('#$jersey ${player.name}',
-            style: GoogleFonts.inter(fontSize: 11, color: player.color, fontWeight: FontWeight.w600)),
+              style: GoogleFonts.inter(
+                  fontSize: 11,
+                  color: player.color,
+                  fontWeight: FontWeight.w600)),
           const SizedBox(height: 2),
           Text(styles[type]!['label'] as String,
-            style: GoogleFonts.bebasNeue(fontSize: 32, letterSpacing: 3, color: color, height: 1)),
+              style: GoogleFonts.bebasNeue(
+                  fontSize: 32, letterSpacing: 3, color: color, height: 1)),
         ]),
       ),
     );
@@ -394,30 +521,38 @@ class _TrackingViewState extends State<TrackingView>
   Widget _corner({required bool top, required bool left}) {
     const size = 20.0;
     return Positioned(
-      top:    top  ? 10 : null, bottom: top  ? null : 10,
-      left:   left ? 10 : null, right:  left ? null : 10,
-      child: SizedBox(width: size, height: size,
-        child: CustomPaint(painter: _CornerPainter(top: top, left: left))),
+      top: top ? 10 : null,
+      bottom: top ? null : 10,
+      left: left ? 10 : null,
+      right: left ? null : 10,
+      child: SizedBox(
+          width: size,
+          height: size,
+          child: CustomPaint(painter: _CornerPainter(top: top, left: left))),
     );
   }
 
-  Widget _manualBtn(String emoji, String label, Color color, VoidCallback onTap) =>
-    GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: BoxDecoration(
-          color: VTColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.15), width: 1.5),
+  Widget _manualBtn(
+          String emoji, String label, Color color, VoidCallback onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: VTColors.surface,
+            borderRadius: BorderRadius.circular(12),
+            border:
+                Border.all(color: VTColors.blockCyan.withValues(alpha: 0.15), width: 1.5),
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text(emoji, style: const TextStyle(fontSize: 20)),
+            const SizedBox(height: 2),
+            Text(label,
+                style: GoogleFonts.bebasNeue(
+                    fontSize: 12, letterSpacing: 1, color: VTColors.textDim)),
+          ]),
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(emoji, style: const TextStyle(fontSize: 20)),
-          const SizedBox(height: 2),
-          Text(label, style: GoogleFonts.bebasNeue(fontSize: 12, letterSpacing: 1, color: VTColors.textDim)),
-        ]),
-      ),
-    );
+      );
 }
 
 // ─── Player Stat Card ──────────────────────────────────────────────────────
@@ -457,13 +592,14 @@ class _PlayerCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Jersey + status
           Row(children: [
             Text('#${player.jersey}',
-              style: GoogleFonts.bebasNeue(fontSize: 20, color: player.color, height: 1)),
+                style: GoogleFonts.bebasNeue(
+                    fontSize: 20, color: player.color, height: 1)),
             const Spacer(),
             Container(
-              width: 6, height: 6,
+              width: 6,
+              height: 6,
               decoration: BoxDecoration(
                 color: isLocked
                     ? (isVisible ? player.color : VTColors.spikeGold)
@@ -472,19 +608,14 @@ class _PlayerCard extends StatelessWidget {
               ),
             ),
           ]),
-
-          // Name
           Text(
             stats.name,
             style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-
           const Divider(color: VTColors.surface2, height: 8),
-
-          // Stats
-          _statRow('HIT', '${stats.hits}',   VTColors.spikeGold),
+          _statRow('HIT', '${stats.hits}', VTColors.spikeGold),
           _statRow('BLK', '${stats.blocks}', VTColors.blockCyan),
           _statRow('PT%', '${stats.pointPercentage}%', VTColors.pointGreen),
         ],
@@ -493,13 +624,18 @@ class _PlayerCard extends StatelessWidget {
   }
 
   Widget _statRow(String label, String value, Color color) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 1),
-    child: Row(children: [
-      Text(label, style: GoogleFonts.inter(fontSize: 9, color: VTColors.textDim, fontWeight: FontWeight.w600)),
-      const Spacer(),
-      Text(value, style: GoogleFonts.bebasNeue(fontSize: 14, color: color, height: 1)),
-    ]),
-  );
+        padding: const EdgeInsets.symmetric(vertical: 1),
+        child: Row(children: [
+          Text(label,
+              style: GoogleFonts.inter(
+                  fontSize: 9,
+                  color: VTColors.textDim,
+                  fontWeight: FontWeight.w600)),
+          const Spacer(),
+          Text(value,
+              style: GoogleFonts.bebasNeue(fontSize: 14, color: color, height: 1)),
+        ]),
+      );
 }
 
 // ─── Skeleton Painter ──────────────────────────────────────────────────────
@@ -518,19 +654,19 @@ class _SkeletonPainter extends CustomPainter {
   });
 
   static const List<List<PoseLandmarkType>> _connections = [
-    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.rightShoulder],
-    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.leftHip],
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip],
     [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
-    [PoseLandmarkType.leftHip,       PoseLandmarkType.rightHip],
-    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.leftElbow],
-    [PoseLandmarkType.leftElbow,     PoseLandmarkType.leftWrist],
+    [PoseLandmarkType.leftHip, PoseLandmarkType.rightHip],
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow],
+    [PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist],
     [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
-    [PoseLandmarkType.rightElbow,    PoseLandmarkType.rightWrist],
-    [PoseLandmarkType.leftHip,       PoseLandmarkType.leftKnee],
-    [PoseLandmarkType.leftKnee,      PoseLandmarkType.leftAnkle],
-    [PoseLandmarkType.rightHip,      PoseLandmarkType.rightKnee],
-    [PoseLandmarkType.rightKnee,     PoseLandmarkType.rightAnkle],
-    [PoseLandmarkType.leftShoulder,  PoseLandmarkType.nose],
+    [PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist],
+    [PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee],
+    [PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle],
+    [PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee],
+    [PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle],
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.nose],
     [PoseLandmarkType.rightShoulder, PoseLandmarkType.nose],
   ];
 
@@ -554,12 +690,12 @@ class _SkeletonPainter extends CustomPainter {
     };
 
     final previewW = cameraController?.value.previewSize?.height ?? size.width;
-    final previewH = cameraController?.value.previewSize?.width  ?? size.height;
+    final previewH = cameraController?.value.previewSize?.width ?? size.height;
 
     Offset toScreen(PoseLandmark l) => Offset(
-      (l.x / previewW) * size.width,
-      (l.y / previewH) * size.height,
-    );
+          (l.x / previewW) * size.width,
+          (l.y / previewH) * size.height,
+        );
 
     for (final conn in _connections) {
       final a = landmarkMap[conn[0]];
@@ -593,9 +729,11 @@ class _CornerPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     final x = left ? 0.0 : size.width;
-    final y = top  ? 0.0 : size.height;
-    canvas.drawLine(Offset(x, y), Offset(x + (left ? size.width : -size.width), y), paint);
-    canvas.drawLine(Offset(x, y), Offset(x, y + (top ? size.height : -size.height)), paint);
+    final y = top ? 0.0 : size.height;
+    canvas.drawLine(
+        Offset(x, y), Offset(x + (left ? size.width : -size.width), y), paint);
+    canvas.drawLine(
+        Offset(x, y), Offset(x, y + (top ? size.height : -size.height)), paint);
   }
 
   @override
