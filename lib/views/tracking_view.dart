@@ -306,7 +306,10 @@ class _TrackingViewState extends State<TrackingView>
         (_vm.cameraController?.value.previewSize?.width ?? viewHeight);
 
     final visible = _vm.playerVisible[p.jersey] ?? false;
-    final color = visible ? p.color : VTColors.spikeGold;
+    final crossing = _vm.isCrossing[p.jersey] ?? false;
+    final color = crossing
+        ? VTColors.dangerRed
+        : (visible ? p.color : VTColors.spikeGold);
     final source = _vm.lockSource[p.jersey] ?? '';
 
     // Badge colour per source — helps distinguish at a glance
@@ -341,7 +344,9 @@ class _TrackingViewState extends State<TrackingView>
                   topLeft: Radius.circular(4), topRight: Radius.circular(4)),
             ),
             child: Text(
-              '#${p.jersey} · ${visible ? "ON" : "LOST"}',
+              crossing
+                  ? '#${p.jersey} · HOLD'
+                  : '#${p.jersey} · ${visible ? "ON" : "LOST"}',
               style: GoogleFonts.jetBrainsMono(
                   fontSize: 9,
                   fontWeight: FontWeight.w600,

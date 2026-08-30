@@ -1,13 +1,14 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Rect;
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
 /// Stores a perceptual fingerprint of a jersey number reference photo
 class NumberFingerprint {
   final String jersey;
-  final List<int> hash; // 64-bit perceptual hash
+  final List<int> hash;
   final int avgBrightness;
 
   NumberFingerprint({
@@ -17,19 +18,18 @@ class NumberFingerprint {
   });
 }
 
-/// Matches live camera frames against stored reference photo fingerprints
+/// Matches live camera frames against stored reference photo fingerprints,
+/// and re-verifies locked players still match their reference appearance.
 class PhotoMatcher {
-  // Similarity threshold — lower = stricter match, higher = more lenient
-  // Range 0.0 (identical) to 1.0 (completely different)
   static const double _matchThreshold = 0.35;
+  // Slightly more lenient for re-verification since lighting/angle
+  // changes more during play than during initial acquisition
+  static const double _verifyThreshold = 0.45;
 
-  // Stored fingerprints per jersey number (3 per player)
   final Map<String, List<NumberFingerprint>> _fingerprints = {};
 
   bool get hasFingerprints => _fingerprints.isNotEmpty;
 
-  /// Load and process reference photos for a player
-  /// Call this once when session starts
   Future<void> registerPlayer(
       String jersey, List<String> photoPaths) async {
     if (photoPaths.isEmpty) return;
@@ -44,7 +44,8 @@ class PhotoMatcher {
 
   /// Check if a camera frame region matches any registered player
   /// Returns the jersey number if matched, null otherwise
-  Future<String?> findMatchInFrame(Uint8List frameBytes, int width, int height) async {
+  Future<String?> findMatchInFrame(
+      Uint8List frameBytes, int width, int height) async {
     if (_fingerprints.isEmpty) return null;
 
     return compute(
@@ -55,6 +56,38 @@ class PhotoMatcher {
         height:      height,
         fingerprints: _fingerprints,
         threshold:   _matchThreshold,
+      ),
+    );
+  }
+
+  /// Re-verify that a SPECIFIC known region (the locked player's current
+  /// bounding box) still visually matches the given jersey's reference
+  /// photos. Used to catch silent identity switches during tracking.
+  ///
+  /// Returns:
+  ///   true  — region still matches this jersey's appearance
+  ///   false — region no longer matches (likely identity switch)
+  ///   null  — inconclusive (e.g. no fingerprints for this jersey,
+  ///           or region too small/invalid) — caller should not act
+  Future<bool?> verifyRegionMatches(
+    Uint8List frameBytes,
+    int width,
+    int height,
+    String jersey,
+    Rect region,
+  ) async {
+    final fingerprints = _fingerprints[jersey];
+    if (fingerprints == null || fingerprints.isEmpty) return null;
+
+    return compute(
+      _verifyRegion,
+      _VerifyInput(
+        frameBytes:   frameBytes,
+        width:        width,
+        height:       height,
+        region:       region,
+        fingerprints: fingerprints,
+        threshold:    _verifyThreshold,
       ),
     );
   }
@@ -86,42 +119,52 @@ class _MatchInput {
   });
 }
 
+class _VerifyInput {
+  final Uint8List frameBytes;
+  final int width;
+  final int height;
+  final Rect region;
+  final List<NumberFingerprint> fingerprints;
+  final double threshold;
+
+  _VerifyInput({
+    required this.frameBytes,
+    required this.width,
+    required this.height,
+    required this.region,
+    required this.fingerprints,
+    required this.threshold,
+  });
+}
+
 // ─── Isolate functions ─────────────────────────────────────────────────────
 
-/// Process reference photos into fingerprints (runs in isolate)
 List<NumberFingerprint> _processPhotos(_PhotoProcessInput input) {
   final fingerprints = <NumberFingerprint>[];
 
   for (final photoPath in input.photoPaths) {
     try {
-      final file  = File(photoPath);
+      final file = File(photoPath);
       if (!file.existsSync()) continue;
 
       final bytes = file.readAsBytesSync();
       final image = img.decodeImage(bytes);
       if (image == null) continue;
 
-      // Crop the centre region — this is where the number was aimed
-      // The aim box is roughly the centre 40% of the image
       final cropX = (image.width  * 0.30).toInt();
       final cropY = (image.height * 0.35).toInt();
       final cropW = (image.width  * 0.40).toInt();
       final cropH = (image.height * 0.30).toInt();
 
       final cropped = img.copyCrop(
-        image,
-        x: cropX, y: cropY,
-        width: cropW, height: cropH,
+        image, x: cropX, y: cropY, width: cropW, height: cropH,
       );
 
-      // Compute perceptual hash
       final hash = _computePHash(cropped);
       final avg  = _computeAvgBrightness(cropped);
 
       fingerprints.add(NumberFingerprint(
-        jersey:        input.jersey,
-        hash:          hash,
-        avgBrightness: avg,
+        jersey: input.jersey, hash: hash, avgBrightness: avg,
       ));
     } catch (_) {
       // Skip failed photos
@@ -131,10 +174,8 @@ List<NumberFingerprint> _processPhotos(_PhotoProcessInput input) {
   return fingerprints;
 }
 
-/// Scan frame for regions matching any registered fingerprint
 String? _matchFrame(_MatchInput input) {
   try {
-    // Decode the BGRA frame bytes into an image
     final image = img.Image.fromBytes(
       width:  input.width,
       height: input.height,
@@ -142,32 +183,25 @@ String? _matchFrame(_MatchInput input) {
       order:  img.ChannelOrder.bgra,
     );
 
-    // Scan the frame in a grid
-    // Focus on the upper 2/3 of the frame (where players' torsos are)
-    const stepX     = 60;  // scan every 60px horizontally
-    const stepY     = 60;  // scan every 60px vertically
-    const patchW    = 120; // patch width
-    const patchH    = 80;  // patch height
+    const stepX  = 60;
+    const stepY  = 60;
+    const patchW = 120;
+    const patchH = 80;
 
     final maxY = (image.height * 0.70).toInt();
 
     for (int y = 0; y < maxY - patchH; y += stepY) {
       for (int x = 0; x < image.width - patchW; x += stepX) {
-        final patch = img.copyCrop(
-          image,
-          x: x, y: y, width: patchW, height: patchH,
-        );
-
+        final patch = img.copyCrop(image, x: x, y: y, width: patchW, height: patchH);
         final patchHash = _computePHash(patch);
 
-        // Compare against all registered fingerprints
         for (final entry in input.fingerprints.entries) {
           for (final fp in entry.value) {
-            final distance = _hammingDistance(patchHash, fp.hash);
+            final distance   = _hammingDistance(patchHash, fp.hash);
             final similarity = 1.0 - (distance / 64.0);
 
             if (similarity >= (1.0 - input.threshold)) {
-              return entry.key; // jersey number matched
+              return entry.key;
             }
           }
         }
@@ -180,32 +214,65 @@ String? _matchFrame(_MatchInput input) {
   return null;
 }
 
-/// Compute a 64-bit perceptual hash (pHash) of an image
-/// This creates a fingerprint that is similar for visually similar images
+/// Verify a specific known region against a specific jersey's fingerprints.
+/// Unlike _matchFrame (which scans the whole frame looking for ANY match),
+/// this checks ONE region against ONE player's known appearance.
+bool? _verifyRegion(_VerifyInput input) {
+  try {
+    final image = img.Image.fromBytes(
+      width:  input.width,
+      height: input.height,
+      bytes:  input.frameBytes.buffer,
+      order:  img.ChannelOrder.bgra,
+    );
+
+    // Clamp region to valid image bounds
+    final x = input.region.left.clamp(0, image.width - 1).toInt();
+    final y = input.region.top.clamp(0, image.height - 1).toInt();
+    final w = input.region.width.clamp(10, image.width - x).toInt();
+    final h = input.region.height.clamp(10, image.height - y).toInt();
+
+    if (w < 10 || h < 10) return null; // region too small to be meaningful
+
+    // Focus on the upper-middle portion of the box (torso area, where
+    // the jersey number/colour pattern is most distinctive) rather than
+    // the whole body box which includes legs/floor
+    final torsoY = y + (h * 0.1).toInt();
+    final torsoH = (h * 0.5).clamp(10, image.height - torsoY).toInt();
+
+    final region = img.copyCrop(image, x: x, y: torsoY, width: w, height: torsoH);
+    final regionHash = _computePHash(region);
+
+    // Compare against best matching fingerprint for this jersey
+    double bestSimilarity = 0.0;
+    for (final fp in input.fingerprints) {
+      final distance   = _hammingDistance(regionHash, fp.hash);
+      final similarity = 1.0 - (distance / 64.0);
+      if (similarity > bestSimilarity) bestSimilarity = similarity;
+    }
+
+    return bestSimilarity >= (1.0 - input.threshold);
+  } catch (_) {
+    return null; // inconclusive on error — don't drop lock
+  }
+}
+
 List<int> _computePHash(img.Image image) {
-  // Resize to 8x8 for the hash
   final small = img.copyResize(image, width: 8, height: 8);
 
-  // Convert to greyscale values
   final pixels = <double>[];
   for (int y = 0; y < 8; y++) {
     for (int x = 0; x < 8; x++) {
       final pixel = small.getPixel(x, y);
-      // Luminance formula
       final grey = 0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b;
       pixels.add(grey);
     }
   }
 
-  // Average pixel value
   final avg = pixels.reduce((a, b) => a + b) / pixels.length;
-
-  // Build hash — 1 if pixel > average, 0 if not
   return pixels.map((p) => p > avg ? 1 : 0).toList();
 }
 
-/// Calculate Hamming distance between two hashes
-/// 0 = identical, 64 = completely different
 int _hammingDistance(List<int> a, List<int> b) {
   if (a.length != b.length) return 64;
   int distance = 0;
@@ -215,7 +282,6 @@ int _hammingDistance(List<int> a, List<int> b) {
   return distance;
 }
 
-/// Calculate average brightness of an image (0-255)
 int _computeAvgBrightness(img.Image image) {
   double total = 0;
   int count    = 0;

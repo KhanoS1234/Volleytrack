@@ -45,21 +45,35 @@ class CameraService {
   static const double _maxDetectionY = 0.95;
   static const double _maxDetectionWidth = 250.0;
 
+  // ── RE-IDENTIFICATION SETTINGS ──────────────────────────────────────────
+  // How often to re-verify a LOCKED player still matches their reference
+  // photos. Lower cost than the initial-lock photo matching since it only
+  // checks the player's own known box region, not the whole frame.
+  static const int _appearanceCheckEveryNFrames = 18; // ~2x per second at 30fps
+
+  // If two players' boxes overlap by more than this fraction, treat it as
+  // a "crossing" event — freeze position updates until they separate.
+  static const double _proximityOverlapThreshold = 0.15; // 15% overlap
+  // ─────────────────────────────────────────────────────────────────────────
+
   final Map<String, int>     _consecutiveDetections = {};
   final Map<String, Rect?>   _lastKnownBoxes        = {};
   final Map<String, int>     _framesSinceDetection  = {};
   final Map<String, bool>    _playerLockedPermanent = {};
   final Map<String, int>     _relockCandidateCount  = {};
   final Map<String, Offset?> _relockCandidatePos    = {};
+  final Map<String, String>  _lockSource            = {};
 
-  // Tracks which method most recently confirmed each player's lock
-  // Values: 'OCR', 'PHOTO', 'SKELETON' (once locked and following pose)
-  final Map<String, String>  _lockSource = {};
+  // Re-identification state
+  final Map<String, bool> _isFrozen = {}; // true during a proximity crossing
+  final Map<String, int>  _framesSinceAppearanceCheck = {};
 
   Function(String jersey, Rect boundingBox, String source)? onPlayerDetected;
   Function(String jersey)?                                  onPlayerLost;
   Function(List<PoseLandmark> landmarks, double confidence, String jersey)?
       onPoseUpdated;
+  // Fired when a proximity crossing is detected between two players
+  Function(String jerseyA, String jerseyB)? onProximityCrossing;
 
   Future<void> initialise() async {
     _cameras = await availableCameras();
@@ -75,14 +89,16 @@ class CameraService {
     _targetJerseys = targetJerseys;
 
     for (final jersey in targetJerseys) {
-      poseAnalysers[jersey]           = PoseAnalyser();
-      _consecutiveDetections[jersey]  = 0;
-      _lastKnownBoxes[jersey]         = null;
-      _framesSinceDetection[jersey]   = 0;
-      _playerLockedPermanent[jersey]  = false;
-      _relockCandidateCount[jersey]   = 0;
-      _relockCandidatePos[jersey]     = null;
-      _lockSource[jersey]             = '';
+      poseAnalysers[jersey]                  = PoseAnalyser();
+      _consecutiveDetections[jersey]         = 0;
+      _lastKnownBoxes[jersey]                = null;
+      _framesSinceDetection[jersey]          = 0;
+      _playerLockedPermanent[jersey]         = false;
+      _relockCandidateCount[jersey]          = 0;
+      _relockCandidatePos[jersey]            = null;
+      _lockSource[jersey]                    = '';
+      _isFrozen[jersey]                      = false;
+      _framesSinceAppearanceCheck[jersey]    = 0;
     }
 
     if (_cameras.isEmpty) await initialise();
@@ -113,21 +129,30 @@ class CameraService {
     for (final jersey in _targetJerseys) {
       _framesSinceDetection[jersey] =
           (_framesSinceDetection[jersey] ?? 0) + 1;
+      _framesSinceAppearanceCheck[jersey] =
+          (_framesSinceAppearanceCheck[jersey] ?? 0) + 1;
     }
 
     try {
       final inputImage = _buildInputImage(image);
       if (inputImage == null) return;
 
+      // 1. Check for proximity crossings BEFORE updating positions —
+      //    this determines whether we should freeze this frame
+      _checkProximityCrossings();
+
+      // 2. Pose detection every frame
       final poses = await _poseDetector.processImage(inputImage);
       _assignPosesToPlayers(poses);
 
+      // 3. OCR
       final anyLocked   = _playerLockedPermanent.values.any((v) => v);
       final ocrInterval = anyLocked ? _ocrAfterLockFrames : _ocrEveryNFrames;
       if (_frameCount % ocrInterval == 0) {
         await _runOCR(inputImage, image.width.toDouble(), image.height.toDouble());
       }
 
+      // 4. Photo matching for unlocked players (initial acquisition)
       final hasUnlocked = _playerLockedPermanent.values.any((v) => !v);
       if (hasUnlocked &&
           _photoMatcher.hasFingerprints &&
@@ -136,20 +161,21 @@ class CameraService {
         await _runPhotoMatch(image);
       }
 
+      // 5. Appearance re-verification for LOCKED players (re-identification)
+      if (_photoMatcher.hasFingerprints) {
+        await _runAppearanceVerification(image);
+      }
+
+      // 6. Handle locked/lost state
       for (final jersey in _targetJerseys) {
         final framesSince = _framesSinceDetection[jersey] ?? 0;
         final isLocked    = _playerLockedPermanent[jersey] ?? false;
 
         if (isLocked) {
           if (framesSince > _maxFramesWithoutDetection) {
-            _playerLockedPermanent[jersey]  = false;
-            _consecutiveDetections[jersey]  = 0;
-            _relockCandidateCount[jersey]   = 0;
-            _relockCandidatePos[jersey]     = null;
-            _lockSource[jersey]             = '';
+            _resetPlayerLock(jersey);
             onPlayerLost?.call(jersey);
           } else if (_lastKnownBoxes[jersey] != null) {
-            // Currently held by skeleton tracking between OCR/photo hits
             onPlayerDetected?.call(
                 jersey, _lastKnownBoxes[jersey]!, _lockSource[jersey] ?? 'SKELETON');
           }
@@ -165,6 +191,97 @@ class CameraService {
     } finally {
       _isProcessing = false;
     }
+  }
+
+  /// Check if any two tracked players' boxes are overlapping significantly.
+  /// If so, freeze position updates for both until they separate — this
+  /// prevents the skeleton from silently "jumping" to the wrong player
+  /// during a crossing.
+  void _checkProximityCrossings() {
+    final lockedJerseys = _targetJerseys
+        .where((j) => _playerLockedPermanent[j] == true)
+        .toList();
+
+    // Reset freeze state first — will be re-set below if still overlapping
+    for (final jersey in lockedJerseys) {
+      _isFrozen[jersey] = false;
+    }
+
+    for (int i = 0; i < lockedJerseys.length; i++) {
+      for (int j = i + 1; j < lockedJerseys.length; j++) {
+        final boxA = _lastKnownBoxes[lockedJerseys[i]];
+        final boxB = _lastKnownBoxes[lockedJerseys[j]];
+        if (boxA == null || boxB == null) continue;
+
+        final overlap = _overlapFraction(boxA, boxB);
+        if (overlap > _proximityOverlapThreshold) {
+          _isFrozen[lockedJerseys[i]] = true;
+          _isFrozen[lockedJerseys[j]] = true;
+          onProximityCrossing?.call(lockedJerseys[i], lockedJerseys[j]);
+        }
+      }
+    }
+  }
+
+  /// Calculate what fraction of the smaller box's area overlaps with
+  /// the other box. Returns 0.0 (no overlap) to 1.0 (fully contained).
+  double _overlapFraction(Rect a, Rect b) {
+    final intersection = a.intersect(b);
+    if (intersection.isEmpty) return 0.0;
+
+    final intersectionArea = intersection.width * intersection.height;
+    final smallerArea = (a.width * a.height) < (b.width * b.height)
+        ? a.width * a.height
+        : b.width * b.height;
+
+    if (smallerArea <= 0) return 0.0;
+    return intersectionArea / smallerArea;
+  }
+
+  /// Periodically re-verify that a locked player's current box region
+  /// still visually matches their reference photos. Catches silent
+  /// identity switches that proximity freezing alone might miss.
+  Future<void> _runAppearanceVerification(CameraImage image) async {
+    for (final jersey in _targetJerseys) {
+      final isLocked = _playerLockedPermanent[jersey] ?? false;
+      if (!isLocked) continue;
+
+      final framesSince = _framesSinceAppearanceCheck[jersey] ?? 0;
+      if (framesSince < _appearanceCheckEveryNFrames) continue;
+
+      _framesSinceAppearanceCheck[jersey] = 0;
+
+      final box = _lastKnownBoxes[jersey];
+      if (box == null) continue;
+
+      try {
+        final bytes = image.planes[0].bytes;
+        final stillMatches = await _photoMatcher.verifyRegionMatches(
+          bytes, image.width, image.height, jersey, box,
+        );
+
+        if (stillMatches == false) {
+          // Appearance no longer matches — likely an identity switch.
+          // Drop the lock so OCR/photo matching can re-acquire correctly.
+          _resetPlayerLock(jersey);
+          onPlayerLost?.call(jersey);
+        }
+        // If stillMatches is null (couldn't determine), we don't act —
+        // avoids false drops from poor lighting or motion blur.
+      } catch (_) {
+        // Continue silently — don't drop lock on a processing error
+      }
+    }
+  }
+
+  void _resetPlayerLock(String jersey) {
+    _playerLockedPermanent[jersey]      = false;
+    _consecutiveDetections[jersey]      = 0;
+    _relockCandidateCount[jersey]       = 0;
+    _relockCandidatePos[jersey]         = null;
+    _lockSource[jersey]                 = '';
+    _isFrozen[jersey]                   = false;
+    _framesSinceAppearanceCheck[jersey] = 0;
   }
 
   void _tryLockPlayer(String jersey, Rect detectedBox, String source) {
@@ -187,7 +304,7 @@ class CameraService {
       if (dist > _maxReacquisitionDistance) return;
       _lastKnownBoxes[jersey]       = detectedBox;
       _framesSinceDetection[jersey] = 0;
-      _lockSource[jersey]           = source; // update source on re-confirm
+      _lockSource[jersey]           = source;
       return;
     }
 
@@ -262,7 +379,13 @@ class CameraService {
 
       if (matchedJersey == null) matchedJersey = _targetJerseys.first;
 
-      if (_playerLockedPermanent[matchedJersey] == true) {
+      // IMPORTANT: skip position updates for frozen players — this is
+      // the proximity freeze in action. Their box stays exactly where
+      // it was until the crossing resolves, preventing the skeleton
+      // from jumping onto the wrong (overlapping) player.
+      final frozen = _isFrozen[matchedJersey] ?? false;
+
+      if (_playerLockedPermanent[matchedJersey] == true && !frozen) {
         final currentBox = _lastKnownBoxes[matchedJersey];
         if (currentBox != null) {
           final newBox = Rect.fromCenter(
@@ -275,6 +398,9 @@ class CameraService {
           _framesSinceDetection[matchedJersey] = 0;
         }
       }
+      // If frozen, we still record the pose for hit/block detection
+      // (the player is still moving/playing) but don't let it move
+      // the tracked box position.
 
       poseAnalysers[matchedJersey]?.addPose(pose);
 
@@ -420,6 +546,8 @@ class CameraService {
     _relockCandidateCount.clear();
     _relockCandidatePos.clear();
     _lockSource.clear();
+    _isFrozen.clear();
+    _framesSinceAppearanceCheck.clear();
     _frameCount   = 0;
     _isProcessing = false;
   }

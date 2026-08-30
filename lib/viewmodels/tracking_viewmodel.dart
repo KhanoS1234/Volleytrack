@@ -21,6 +21,8 @@ class TrackingViewModel extends ChangeNotifier {
   final Map<String, double>             confidences   = {};
   // Which method locked this player: 'OCR', 'PHOTO', or 'SKELETON'
   final Map<String, String>             lockSource    = {};
+  // True while this player is in a proximity crossing (frozen tracking)
+  final Map<String, bool>               isCrossing    = {};
 
   bool       showFlash  = false;
   String?    flashJersey;
@@ -45,6 +47,7 @@ class TrackingViewModel extends ChangeNotifier {
       skeletons[p.jersey]     = [];
       confidences[p.jersey]   = 0.0;
       lockSource[p.jersey]    = '';
+      isCrossing[p.jersey]    = false;
     }
   }
 
@@ -87,6 +90,21 @@ class TrackingViewModel extends ChangeNotifier {
       playerVisible[jersey] = false;
       lockSource[jersey]    = '';
       notifyListeners();
+    };
+
+    _cameraService.onProximityCrossing = (jerseyA, jerseyB) {
+      isCrossing[jerseyA] = true;
+      isCrossing[jerseyB] = true;
+      notifyListeners();
+
+      // Clear the crossing flag shortly after — it will be re-set every
+      // frame while the actual overlap continues, so this just handles
+      // the visual fade-out once they separate
+      Timer(const Duration(milliseconds: 800), () {
+        isCrossing[jerseyA] = false;
+        isCrossing[jerseyB] = false;
+        notifyListeners();
+      });
     };
 
     _cameraService.onPoseUpdated = (landmarks, confidence, jersey) {
