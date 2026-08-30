@@ -34,7 +34,7 @@ class CameraService {
   static const int _ocrEveryNFrames    = 1;
   static const int _ocrAfterLockFrames = 45;
   static const int _photoEveryNFrames  = 5;
-  static const int _confirmationFrames = 2;
+  // confirmationFrames now comes from _settings (live adjustable)
   static const int _maxFramesWithoutDetection = 300;
   static const double _maxReacquisitionDistance = 200000.0;
   static const int _relockConfirmationFrames = 3;
@@ -326,7 +326,7 @@ class CameraService {
         _consecutiveDetections[jersey] =
             (_consecutiveDetections[jersey] ?? 0) + 1;
 
-        if ((_consecutiveDetections[jersey] ?? 0) >= _confirmationFrames) {
+        if ((_consecutiveDetections[jersey] ?? 0) >= _settings.confirmationFrames) {
           final boxWidth  = (bb.width  * 8).clamp(_frameW * 0.06, _frameW * 0.25);
           final boxHeight = (bb.height * 20).clamp(_frameH * 0.25, _frameH * 0.80);
 

@@ -409,8 +409,8 @@ class _TrackingViewState extends State<TrackingView>
     );
   }
 
-  /// Live jersey number recognition sensitivity slider.
-  /// DEVELOPMENT ONLY — remove once optimal value is found and hardcoded.
+  /// Live jersey number recognition tuning sliders.
+  /// DEVELOPMENT ONLY — remove once optimal values are found and hardcoded.
   Widget _buildSensitivitySlider() {
     final settings = DetectionSettings();
 
@@ -425,53 +425,110 @@ class _TrackingViewState extends State<TrackingView>
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: VTColors.spikeGold.withValues(alpha: 0.3)),
         ),
-        child: Row(
-          children: [
-            const Icon(Icons.tune, color: VTColors.spikeGold, size: 16),
-            const SizedBox(width: 8),
-            Text('Jersey Sensitivity',
-                style: GoogleFonts.inter(fontSize: 11, color: VTColors.textDim)),
-            Expanded(
-              child: SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: 3,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                  activeTrackColor: VTColors.spikeGold,
-                  inactiveTrackColor: VTColors.surface2,
-                  thumbColor: VTColors.spikeGold,
+        child: StatefulBuilder(
+          builder: (context, setSliderState) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Slider 1 — distance sensitivity
+                Row(
+                  children: [
+                    const Icon(Icons.tune, color: VTColors.spikeGold, size: 16),
+                    const SizedBox(width: 8),
+                    Text('Jersey Sensitivity',
+                        style: GoogleFonts.inter(
+                            fontSize: 11, color: VTColors.textDim)),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 3,
+                          thumbShape:
+                              const RoundSliderThumbShape(enabledThumbRadius: 7),
+                          activeTrackColor: VTColors.spikeGold,
+                          inactiveTrackColor: VTColors.surface2,
+                          thumbColor: VTColors.spikeGold,
+                        ),
+                        child: Slider(
+                          value: settings.minDetectionWidth,
+                          min: DetectionSettings.minWidthAllowed,
+                          max: DetectionSettings.maxWidthAllowed,
+                          onChanged: (v) {
+                            settings.setMinDetectionWidth(v);
+                            setSliderState(() {});
+                          },
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 46,
+                      child: Text(
+                        settings.minDetectionWidth < 12
+                            ? 'FAR'
+                            : settings.minDetectionWidth > 25
+                                ? 'CLOSE'
+                                : 'MID',
+                        textAlign: TextAlign.right,
+                        style: GoogleFonts.bebasNeue(
+                          fontSize: 14,
+                          letterSpacing: 1,
+                          color: VTColors.spikeGold,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                child: StatefulBuilder(
-                  builder: (context, setSliderState) {
-                    return Slider(
-                      value: settings.minDetectionWidth,
-                      min: DetectionSettings.minAllowed,
-                      max: DetectionSettings.maxAllowed,
-                      onChanged: (v) {
-                        settings.setMinDetectionWidth(v);
-                        setSliderState(() {});
-                      },
-                    );
-                  },
+
+                // Slider 2 — lock confidence (false positive prevention)
+                Row(
+                  children: [
+                    const Icon(Icons.verified_outlined,
+                        color: VTColors.blockCyan, size: 16),
+                    const SizedBox(width: 8),
+                    Text('Lock Confidence',
+                        style: GoogleFonts.inter(
+                            fontSize: 11, color: VTColors.textDim)),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 3,
+                          thumbShape:
+                              const RoundSliderThumbShape(enabledThumbRadius: 7),
+                          activeTrackColor: VTColors.blockCyan,
+                          inactiveTrackColor: VTColors.surface2,
+                          thumbColor: VTColors.blockCyan,
+                        ),
+                        child: Slider(
+                          value: settings.confirmationFrames.toDouble(),
+                          min: DetectionSettings.minConfirmationAllowed
+                              .toDouble(),
+                          max: DetectionSettings.maxConfirmationAllowed
+                              .toDouble(),
+                          divisions: DetectionSettings.maxConfirmationAllowed -
+                              DetectionSettings.minConfirmationAllowed,
+                          onChanged: (v) {
+                            settings.setConfirmationFrames(v.round());
+                            setSliderState(() {});
+                          },
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 46,
+                      child: Text(
+                        '${settings.confirmationFrames}x',
+                        textAlign: TextAlign.right,
+                        style: GoogleFonts.bebasNeue(
+                          fontSize: 14,
+                          letterSpacing: 1,
+                          color: VTColors.blockCyan,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ),
-            SizedBox(
-              width: 50,
-              child: Text(
-                settings.minDetectionWidth < 12
-                    ? 'FAR'
-                    : settings.minDetectionWidth > 25
-                        ? 'CLOSE'
-                        : 'MID',
-                textAlign: TextAlign.right,
-                style: GoogleFonts.bebasNeue(
-                  fontSize: 14,
-                  letterSpacing: 1,
-                  color: VTColors.spikeGold,
-                ),
-              ),
-            ),
-          ],
+              ],
+            );
+          },
         ),
       ),
     );
