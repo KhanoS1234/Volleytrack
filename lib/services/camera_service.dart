@@ -34,7 +34,6 @@ class CameraService {
   static const int _ocrEveryNFrames    = 1;
   static const int _ocrAfterLockFrames = 45;
   static const int _photoEveryNFrames  = 5;
-  // confirmationFrames now comes from _settings (live adjustable)
   static const int _maxFramesWithoutDetection = 300;
   static const double _maxReacquisitionDistance = 200000.0;
   static const int _relockConfirmationFrames = 3;
@@ -44,7 +43,6 @@ class CameraService {
 
   static const double _minDetectionY = 0.15;
   static const double _maxDetectionY = 0.95;
-  // NOTE: minDetectionWidth now comes from _settings (live adjustable)
   static const double _maxDetectionWidth = 250.0;
 
   final Map<String, int>     _consecutiveDetections = {};
@@ -54,8 +52,12 @@ class CameraService {
   final Map<String, int>     _relockCandidateCount  = {};
   final Map<String, Offset?> _relockCandidatePos    = {};
 
-  Function(String jersey, Rect boundingBox)? onPlayerDetected;
-  Function(String jersey)?                   onPlayerLost;
+  // Tracks which method most recently confirmed each player's lock
+  // Values: 'OCR', 'PHOTO', 'SKELETON' (once locked and following pose)
+  final Map<String, String>  _lockSource = {};
+
+  Function(String jersey, Rect boundingBox, String source)? onPlayerDetected;
+  Function(String jersey)?                                  onPlayerLost;
   Function(List<PoseLandmark> landmarks, double confidence, String jersey)?
       onPoseUpdated;
 
@@ -80,6 +82,7 @@ class CameraService {
       _playerLockedPermanent[jersey]  = false;
       _relockCandidateCount[jersey]   = 0;
       _relockCandidatePos[jersey]     = null;
+      _lockSource[jersey]             = '';
     }
 
     if (_cameras.isEmpty) await initialise();
@@ -143,9 +146,12 @@ class CameraService {
             _consecutiveDetections[jersey]  = 0;
             _relockCandidateCount[jersey]   = 0;
             _relockCandidatePos[jersey]     = null;
+            _lockSource[jersey]             = '';
             onPlayerLost?.call(jersey);
           } else if (_lastKnownBoxes[jersey] != null) {
-            onPlayerDetected?.call(jersey, _lastKnownBoxes[jersey]!);
+            // Currently held by skeleton tracking between OCR/photo hits
+            onPlayerDetected?.call(
+                jersey, _lastKnownBoxes[jersey]!, _lockSource[jersey] ?? 'SKELETON');
           }
         } else {
           if (framesSince > 30) {
@@ -161,7 +167,7 @@ class CameraService {
     }
   }
 
-  void _tryLockPlayer(String jersey, Rect detectedBox) {
+  void _tryLockPlayer(String jersey, Rect detectedBox, String source) {
     final isLocked       = _playerLockedPermanent[jersey] ?? false;
     final lastBox        = _lastKnownBoxes[jersey];
     final detectedCentre = Offset(
@@ -181,6 +187,7 @@ class CameraService {
       if (dist > _maxReacquisitionDistance) return;
       _lastKnownBoxes[jersey]       = detectedBox;
       _framesSinceDetection[jersey] = 0;
+      _lockSource[jersey]           = source; // update source on re-confirm
       return;
     }
 
@@ -200,7 +207,8 @@ class CameraService {
           _relockCandidateCount[jersey]  = 0;
           _relockCandidatePos[jersey]    = null;
           _framesSinceDetection[jersey]  = 0;
-          onPlayerDetected?.call(jersey, detectedBox);
+          _lockSource[jersey]            = source;
+          onPlayerDetected?.call(jersey, detectedBox, source);
         }
       } else {
         _relockCandidateCount[jersey] = 1;
@@ -297,8 +305,6 @@ class CameraService {
 
       if (relativeY < _minDetectionY) continue;
       if (relativeBottom > _maxDetectionY) continue;
-
-      // Live-adjustable jersey number recognition sensitivity
       if (bb.width < _settings.minDetectionWidth) continue;
       if (bb.width > _maxDetectionWidth) continue;
 
@@ -339,7 +345,7 @@ class CameraService {
             height: boxHeight,
           );
 
-          _tryLockPlayer(jersey, expanded);
+          _tryLockPlayer(jersey, expanded, 'OCR');
         }
       }
     }
@@ -361,7 +367,7 @@ class CameraService {
           width:  w * 0.2,
           height: h * 0.5,
         );
-        _tryLockPlayer(matchedJersey, box);
+        _tryLockPlayer(matchedJersey, box, 'PHOTO');
       }
     } catch (_) {
       // Continue silently
@@ -413,6 +419,7 @@ class CameraService {
     _playerLockedPermanent.clear();
     _relockCandidateCount.clear();
     _relockCandidatePos.clear();
+    _lockSource.clear();
     _frameCount   = 0;
     _isProcessing = false;
   }

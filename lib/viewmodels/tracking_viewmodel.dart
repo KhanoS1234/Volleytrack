@@ -13,12 +13,14 @@ class TrackingViewModel extends ChangeNotifier {
   final CameraService   _cameraService = CameraService();
   final DatabaseService _db            = DatabaseService();
 
-  final Map<String, PlayerStats>            stats         = {};
-  final Map<String, bool>                   playerLocked  = {};
-  final Map<String, bool>                   playerVisible = {};
-  final Map<String, Rect?>                  playerBoxes   = {};
-  final Map<String, List<PoseLandmark>>     skeletons     = {};
-  final Map<String, double>                 confidences   = {};
+  final Map<String, PlayerStats>        stats         = {};
+  final Map<String, bool>               playerLocked  = {};
+  final Map<String, bool>               playerVisible = {};
+  final Map<String, Rect?>              playerBoxes   = {};
+  final Map<String, List<PoseLandmark>> skeletons     = {};
+  final Map<String, double>             confidences   = {};
+  // Which method locked this player: 'OCR', 'PHOTO', or 'SKELETON'
+  final Map<String, String>             lockSource    = {};
 
   bool       showFlash  = false;
   String?    flashJersey;
@@ -32,9 +34,6 @@ class TrackingViewModel extends ChangeNotifier {
 
   int selectedPlayerIndex = 0;
 
-  bool isInitialising = true;
-  String initStatus   = 'Starting camera...';
-
   get cameraController => _cameraService.controller;
 
   TrackingViewModel({required this.players}) {
@@ -45,26 +44,18 @@ class TrackingViewModel extends ChangeNotifier {
       playerBoxes[p.jersey]   = null;
       skeletons[p.jersey]     = [];
       confidences[p.jersey]   = 0.0;
+      lockSource[p.jersey]    = '';
     }
   }
 
   Future<void> initialise() async {
-    // Step 1 — Register reference photos
     if (players.any((p) => p.photoPaths.isNotEmpty)) {
-      initStatus = 'Loading reference photos...';
-      notifyListeners();
-
       for (final p in players) {
         if (p.photoPaths.isNotEmpty) {
-          await _cameraService.registerPlayerPhotos(
-              p.jersey, p.photoPaths);
+          await _cameraService.registerPlayerPhotos(p.jersey, p.photoPaths);
         }
       }
     }
-
-    // Step 2 — Start camera
-    initStatus = 'Starting camera...';
-    notifyListeners();
 
     await _cameraService.initialise();
 
@@ -77,10 +68,11 @@ class TrackingViewModel extends ChangeNotifier {
       };
     }
 
-    _cameraService.onPlayerDetected = (jersey, box) {
+    _cameraService.onPlayerDetected = (jersey, box, source) {
       playerLocked[jersey]  = true;
       playerVisible[jersey] = true;
       playerBoxes[jersey]   = box;
+      lockSource[jersey]    = source;
 
       _playerLostTimers[jersey]?.cancel();
       _playerLostTimers[jersey] = Timer(const Duration(seconds: 5), () {
@@ -93,6 +85,7 @@ class TrackingViewModel extends ChangeNotifier {
 
     _cameraService.onPlayerLost = (jersey) {
       playerVisible[jersey] = false;
+      lockSource[jersey]    = '';
       notifyListeners();
     };
 
@@ -104,10 +97,6 @@ class TrackingViewModel extends ChangeNotifier {
 
     await _cameraService.startCamera(players.map((p) => p.jersey).toList());
 
-    isInitialising = false;
-    notifyListeners();
-
-    // Start session timer
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       timerSeconds++;
       for (final p in players) {
@@ -117,6 +106,8 @@ class TrackingViewModel extends ChangeNotifier {
       }
       notifyListeners();
     });
+
+    notifyListeners();
   }
 
   void recordEvent(String jersey, EventType type,

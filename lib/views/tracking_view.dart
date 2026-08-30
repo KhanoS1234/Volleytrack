@@ -307,6 +307,14 @@ class _TrackingViewState extends State<TrackingView>
 
     final visible = _vm.playerVisible[p.jersey] ?? false;
     final color = visible ? p.color : VTColors.spikeGold;
+    final source = _vm.lockSource[p.jersey] ?? '';
+
+    // Badge colour per source — helps distinguish at a glance
+    final sourceColor = source == 'OCR'
+        ? VTColors.blockCyan
+        : source == 'PHOTO'
+            ? VTColors.spikeGold
+            : VTColors.pointGreen; // SKELETON (held between detections)
 
     return Positioned(
       left: (box.left * scaleX).clamp(0, viewWidth - 20),
@@ -341,6 +349,26 @@ class _TrackingViewState extends State<TrackingView>
             ),
           ),
         ),
+        // Source badge — shows which method locked this player
+        if (visible && source.isNotEmpty)
+          Positioned(
+            bottom: -18,
+            left: -2,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: sourceColor,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                source,
+                style: GoogleFonts.jetBrainsMono(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black),
+              ),
+            ),
+          ),
       ]),
     );
   }
