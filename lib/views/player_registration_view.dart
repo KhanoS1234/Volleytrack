@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import '../theme.dart';
 import '../models/team_model.dart';
+import '../services/color_detector.dart';
 
 class PlayerRegistrationView extends StatefulWidget {
   final PlayerRegistration? existing;
@@ -27,6 +28,8 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
   bool _capturing   = false;
 
   List<String> _photoPaths = [];
+  JerseyColors? _detectedColors;
+  bool _detectingColors = false;
 
   final List<Map<String, String>> _photoGuides = [
     {'distance': '1-2m',  'icon': '🔍', 'label': 'Close up'},
@@ -41,6 +44,7 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
       _jerseyController.text = widget.existing!.jersey;
       _nameController.text   = widget.existing!.name;
       _photoPaths = List.from(widget.existing!.photoPaths);
+      _detectedColors = widget.existing!.colors;
 
       // DEBUG — verify what paths we received and whether files exist
       debugPrint('=== EDIT PLAYER DEBUG ===');
@@ -127,6 +131,19 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
         _photoPaths.add(savedPath);
         _capturing = false;
       });
+
+      // Auto-detect jersey and number colours from the FIRST photo only —
+      // it's the closest, clearest shot and best represents true colours
+      if (_photoPaths.length == 1) {
+        setState(() => _detectingColors = true);
+        final colors = await ColorDetector.detectColors(savedPath);
+        if (mounted) {
+          setState(() {
+            _detectedColors = colors;
+            _detectingColors = false;
+          });
+        }
+      }
     } catch (e) {
       debugPrint('=== PHOTO CAPTURE ERROR === $e');
       setState(() => _capturing = false);
@@ -142,7 +159,12 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
   }
 
   void _removePhoto(int index) {
-    setState(() => _photoPaths.removeAt(index));
+    setState(() {
+      _photoPaths.removeAt(index);
+      // If the first (colour-source) photo was removed, clear
+      // detected colours so they get re-detected on next photo 1
+      if (index == 0) _detectedColors = null;
+    });
   }
 
   void _savePlayer() {
@@ -168,6 +190,7 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
       jersey:     jersey,
       name:       name.isEmpty ? 'Player #$jersey' : name,
       photoPaths: _photoPaths,
+      colors:     _detectedColors,
     );
 
     Navigator.pop(context, player);
@@ -179,6 +202,100 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
     _nameController.dispose();
     _cameraController?.dispose();
     super.dispose();
+  }
+
+  /// Shows the auto-detected jersey and number colours as swatches,
+  /// so the coach can glance-confirm they look right, or retake the
+  /// first photo if the detection looks obviously wrong.
+  Widget _buildColorSwatches() {
+    if (_detectingColors) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: VTColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.15)),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 16, height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: VTColors.blockCyan),
+            ),
+            const SizedBox(width: 10),
+            Text('Detecting colours...',
+                style: GoogleFonts.inter(fontSize: 12, color: VTColors.textDim)),
+          ],
+        ),
+      );
+    }
+
+    if (_detectedColors == null) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: VTColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: VTColors.blockCyan.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.palette_outlined, color: VTColors.blockCyan, size: 14),
+              const SizedBox(width: 6),
+              Text('AUTO-DETECTED COLOURS',
+                  style: GoogleFonts.inter(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1,
+                      color: VTColors.blockCyan)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _colorSwatchTile(
+                  'Jersey', _detectedColors!.jerseyColor,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _colorSwatchTile(
+                  'Number', _detectedColors!.numberColor,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Doesn\'t look right? Remove photo 1 below and retake it.',
+            style: GoogleFonts.inter(fontSize: 10, color: VTColors.muted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _colorSwatchTile(String label, Color color) {
+    return Row(
+      children: [
+        Container(
+          width: 28, height: 28,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1.5),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(label,
+            style: GoogleFonts.inter(fontSize: 12, color: VTColors.textDim)),
+      ],
+    );
   }
 
   /// Builds a thumbnail, showing a visible broken-image state if the
@@ -302,6 +419,13 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                   ),
 
                   const SizedBox(height: 16),
+
+                  // Auto-detected colour swatches — appear once the
+                  // first (close-up) photo has been taken
+                  if (_photoPaths.isNotEmpty) ...[
+                    _buildColorSwatches(),
+                    const SizedBox(height: 16),
+                  ],
 
                   ...List.generate(3, (i) {
                     final taken  = i < _photoPaths.length;

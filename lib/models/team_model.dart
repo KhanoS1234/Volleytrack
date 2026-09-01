@@ -1,34 +1,44 @@
 import 'dart:convert';
+import 'dart:ui' show Color;
+import 'color_detector.dart';
 
 class PlayerRegistration {
   final String jersey;
   final String name;
-  // Paths to 3 reference photos saved on device
   final List<String> photoPaths;
+  // Auto-detected from the first (close-up) reference photo
+  final JerseyColors? colors;
 
   PlayerRegistration({
     required this.jersey,
     required this.name,
     this.photoPaths = const [],
+    this.colors,
   });
 
   Map<String, dynamic> toMap() => {
     'jersey':     jersey,
     'name':       name,
     'photoPaths': jsonEncode(photoPaths),
+    'colors':     colors != null ? jsonEncode(colors!.toMap()) : null,
   };
 
   factory PlayerRegistration.fromMap(Map<String, dynamic> map) => PlayerRegistration(
     jersey:     map['jersey'] as String,
     name:       map['name']   as String,
     photoPaths: List<String>.from(jsonDecode(map['photoPaths'] as String? ?? '[]')),
+    colors: map['colors'] != null
+        ? JerseyColors.fromMap(jsonDecode(map['colors'] as String))
+        : null,
   );
 
-  PlayerRegistration copyWith({List<String>? photoPaths}) => PlayerRegistration(
-    jersey:     jersey,
-    name:       name,
-    photoPaths: photoPaths ?? this.photoPaths,
-  );
+  PlayerRegistration copyWith({List<String>? photoPaths, JerseyColors? colors}) =>
+      PlayerRegistration(
+        jersey:     jersey,
+        name:       name,
+        photoPaths: photoPaths ?? this.photoPaths,
+        colors:     colors ?? this.colors,
+      );
 }
 
 class TeamModel {
