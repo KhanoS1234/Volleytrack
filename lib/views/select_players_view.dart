@@ -41,16 +41,16 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
       return;
     }
 
-    final selectedPlayers = _selectedIndices.toList()
-      ..sort();
+    final selectedPlayers = _selectedIndices.toList()..sort();
 
     final players = selectedPlayers.asMap().entries.map((entry) {
       final player = widget.team.players[entry.value];
       return PlayerConfig(
-        jersey:     player.jersey,
-        name:       player.name,
-        color:      PlayerColors.palette[entry.key],
-        photoPaths: player.photoPaths,
+        jersey:         player.jersey,
+        name:           player.name,
+        color:          PlayerColors.palette[entry.key],
+        photoPaths:     player.photoPaths,
+        detectedColors: player.colors,
       );
     }).toList();
 
@@ -81,7 +81,6 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
       ),
       body: Column(
         children: [
-          // Info bar
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
             color: VTColors.courtMid,
@@ -98,8 +97,8 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: VTColors.surface,
                     borderRadius: BorderRadius.circular(20),
@@ -115,20 +114,17 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
               ],
             ),
           ),
-
-          // Players list
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(20),
               itemCount: widget.team.players.length,
               itemBuilder: (_, i) {
-                final player    = widget.team.players[i];
-                final selected  = _selectedIndices.contains(i);
+                final player = widget.team.players[i];
+                final selected = _selectedIndices.contains(i);
                 final slotIndex = _selectedIndices.toList()..sort();
-                final slot      = slotIndex.indexOf(i);
-                final color     = selected
-                    ? PlayerColors.palette[slot]
-                    : VTColors.textDim;
+                final slot = slotIndex.indexOf(i);
+                final color =
+                    selected ? PlayerColors.palette[slot] : VTColors.textDim;
 
                 return GestureDetector(
                   onTap: () => _togglePlayer(i),
@@ -150,15 +146,12 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                     ),
                     child: Row(
                       children: [
-                        // Selection indicator
                         AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
                           width: 32,
                           height: 32,
                           decoration: BoxDecoration(
-                            color: selected
-                                ? color
-                                : VTColors.surface2,
+                            color: selected ? color : VTColors.surface2,
                             shape: BoxShape.circle,
                             border: Border.all(
                               color: selected
@@ -171,17 +164,16 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                                 ? Text(
                                     '${slot + 1}',
                                     style: GoogleFonts.bebasNeue(
-                                        fontSize: 16,
-                                        color: Colors.black),
+                                        fontSize: 16, color: Colors.black),
                                   )
                                 : const Icon(Icons.add,
                                     color: VTColors.textDim, size: 16),
                           ),
                         ),
-
                         const SizedBox(width: 14),
 
-                        // Jersey badge
+                        // Jersey badge — shows detected colour as a
+                        // small dot if available
                         Container(
                           width: 44,
                           height: 44,
@@ -201,16 +193,13 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                               '#${player.jersey}',
                               style: GoogleFonts.bebasNeue(
                                   fontSize: 16,
-                                  color: selected
-                                      ? color
-                                      : VTColors.spikeGold),
+                                  color: selected ? color : VTColors.spikeGold),
                             ),
                           ),
                         ),
 
                         const SizedBox(width: 12),
 
-                        // Player info
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -220,9 +209,7 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                                 style: GoogleFonts.inter(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
-                                  color: selected
-                                      ? VTColors.netWhite
-                                      : VTColors.netWhite,
+                                  color: VTColors.netWhite,
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -240,7 +227,7 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                                   const SizedBox(width: 4),
                                   Text(
                                     player.photoPaths.length >= 3
-                                        ? '3 photos registered'
+                                        ? '3 photos'
                                         : 'Photos incomplete',
                                     style: GoogleFonts.inter(
                                       fontSize: 11,
@@ -249,6 +236,25 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                                           : VTColors.spikeGold,
                                     ),
                                   ),
+                                  // Colour swatch indicator
+                                  if (player.colors != null) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      width: 10, height: 10,
+                                      decoration: BoxDecoration(
+                                        color: player.colors!.jerseyColor,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                            color: Colors.white
+                                                .withValues(alpha: 0.3)),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Text('colour set',
+                                        style: GoogleFonts.inter(
+                                            fontSize: 10,
+                                            color: VTColors.textDim)),
+                                  ],
                                 ],
                               ),
                             ],
@@ -261,8 +267,6 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
               },
             ),
           ),
-
-          // Start session button
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
             child: SizedBox(

@@ -60,6 +60,13 @@ class TrackingViewModel extends ChangeNotifier {
       }
     }
 
+    // Register auto-detected jersey colours for colour-based detection
+    for (final p in players) {
+      if (p.detectedColors != null) {
+        _cameraService.registerPlayerColors(p.jersey, p.detectedColors);
+      }
+    }
+
     await _cameraService.initialise();
 
     for (final p in players) {

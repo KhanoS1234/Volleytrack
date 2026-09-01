@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
@@ -5,6 +6,8 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'dart:ui' show Rect, Size, Offset;
 import 'pose_analyser.dart';
 import 'photo_matcher.dart';
+import 'color_matcher.dart';
+import 'color_detector.dart';
 import 'detection_settings.dart';
 
 class CameraService {
@@ -25,6 +28,7 @@ class CameraService {
   );
 
   final PhotoMatcher _photoMatcher = PhotoMatcher();
+  final ColorMatcher _colorMatcher = ColorMatcher();
   final Map<String, PoseAnalyser> poseAnalysers = {};
 
   bool _isProcessing = false;
@@ -34,6 +38,7 @@ class CameraService {
   static const int _ocrEveryNFrames    = 1;
   static const int _ocrAfterLockFrames = 45;
   static const int _photoEveryNFrames  = 5;
+  static const int _colorEveryNFrames  = 6;
   static const int _maxFramesWithoutDetection = 300;
   static const double _maxReacquisitionDistance = 200000.0;
   static const int _relockConfirmationFrames = 3;
@@ -83,6 +88,12 @@ class CameraService {
   Future<void> registerPlayerPhotos(
       String jersey, List<String> photoPaths) async {
     await _photoMatcher.registerPlayer(jersey, photoPaths);
+  }
+
+  /// Register a player's auto-detected jersey colours so they can be
+  /// used as a pre-filter and confidence booster during tracking.
+  void registerPlayerColors(String jersey, JerseyColors? colors) {
+    _colorMatcher.registerPlayerColor(jersey, colors);
   }
 
   Future<void> startCamera(List<String> targetJerseys) async {
@@ -149,7 +160,8 @@ class CameraService {
       final anyLocked   = _playerLockedPermanent.values.any((v) => v);
       final ocrInterval = anyLocked ? _ocrAfterLockFrames : _ocrEveryNFrames;
       if (_frameCount % ocrInterval == 0) {
-        await _runOCR(inputImage, image.width.toDouble(), image.height.toDouble());
+        await _runOCR(inputImage, image.planes[0].bytes,
+            image.width.toDouble(), image.height.toDouble());
       }
 
       // 4. Photo matching for unlocked players (initial acquisition)
@@ -159,6 +171,17 @@ class CameraService {
           _frameCount % _photoEveryNFrames == 0 &&
           image.planes.isNotEmpty) {
         await _runPhotoMatch(image);
+      }
+
+      // 4b. Colour region scanning for unlocked players — a third,
+      // lightweight signal alongside OCR and photo matching. Colour
+      // alone is a weaker signal (many things can share a colour) so
+      // it requires more consecutive confirmations before locking.
+      if (hasUnlocked &&
+          _colorMatcher.hasColors &&
+          _frameCount % _colorEveryNFrames == 0 &&
+          image.planes.isNotEmpty) {
+        await _runColorScan(image);
       }
 
       // 5. Appearance re-verification for LOCKED players (re-identification)
@@ -420,7 +443,7 @@ class CameraService {
   }
 
   Future<void> _runOCR(
-      InputImage inputImage, double imageWidth, double imageHeight) async {
+      InputImage inputImage, Uint8List rawBytes, double imageWidth, double imageHeight) async {
     final recognised = await _textRecognizer.processImage(inputImage);
 
     for (final block in recognised.blocks) {
@@ -465,6 +488,27 @@ class CameraService {
         _consecutiveDetections[jersey] =
             (_consecutiveDetections[jersey] ?? 0) + 1;
 
+        // Colour confidence boost — if this jersey's registered colour
+        // also matches the region around the detected number, count it
+        // as an extra confirmation. This lets a correct OCR read lock
+        // faster when the colour agrees, without weakening the check
+        // when colour data isn't available for this jersey.
+        if (_colorMatcher.hasColors) {
+          final expandedForColorCheck = Rect.fromCenter(
+            center: Offset(bb.left + bb.width / 2, bb.top + bb.height * 6),
+            width:  (bb.width  * 8).clamp(_frameW * 0.06, _frameW * 0.25),
+            height: (bb.height * 20).clamp(_frameH * 0.25, _frameH * 0.80),
+          );
+          final colorMatches = await _colorMatcher.regionMatchesJerseyColor(
+            rawBytes, imageWidth.toInt(), imageHeight.toInt(),
+            jersey, expandedForColorCheck,
+          );
+          if (colorMatches) {
+            _consecutiveDetections[jersey] =
+                (_consecutiveDetections[jersey] ?? 0) + 1;
+          }
+        }
+
         if ((_consecutiveDetections[jersey] ?? 0) >= _settings.confirmationFrames) {
           final boxWidth  = (bb.width  * 8).clamp(_frameW * 0.06, _frameW * 0.25);
           final boxHeight = (bb.height * 20).clamp(_frameH * 0.25, _frameH * 0.80);
@@ -481,6 +525,36 @@ class CameraService {
           _tryLockPlayer(jersey, expanded, 'OCR');
         }
       }
+    }
+  }
+
+  /// Scans the frame for regions matching any unlocked player's
+  /// registered jersey colour. This is a weaker signal than OCR or
+  /// photo matching (colour alone isn't unique) so it uses the normal
+  /// candidate-confirmation flow in _tryLockPlayer, which already
+  /// requires multiple consecutive stable detections before locking.
+  Future<void> _runColorScan(CameraImage image) async {
+    try {
+      final regions = await _colorMatcher.findColorRegions(
+        image.planes[0].bytes, image.width, image.height,
+      );
+
+      for (final entry in regions.entries) {
+        final jersey = entry.key;
+        if (_playerLockedPermanent[jersey] ?? false) continue;
+
+        // Expand the raw colour blob into a sensible player-sized box
+        final raw = entry.value;
+        final expanded = Rect.fromCenter(
+          center: raw.center,
+          width:  (raw.width  * 2.5).clamp(_frameW * 0.06, _frameW * 0.25),
+          height: (raw.height * 3.0).clamp(_frameH * 0.30, _frameH * 0.80),
+        );
+
+        _tryLockPlayer(jersey, expanded, 'COLOR');
+      }
+    } catch (_) {
+      // Continue silently
     }
   }
 
@@ -546,6 +620,7 @@ class CameraService {
     }
     poseAnalysers.clear();
     _photoMatcher.clear();
+    _colorMatcher.clear();
     _consecutiveDetections.clear();
     _lastKnownBoxes.clear();
     _framesSinceDetection.clear();

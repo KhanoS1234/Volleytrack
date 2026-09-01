@@ -317,7 +317,9 @@ class _TrackingViewState extends State<TrackingView>
         ? VTColors.blockCyan
         : source == 'PHOTO'
             ? VTColors.spikeGold
-            : VTColors.pointGreen; // SKELETON (held between detections)
+            : source == 'COLOR'
+                ? const Color(0xFFFF69B4) // pink — distinct from other sources
+                : VTColors.pointGreen; // SKELETON
 
     return Positioned(
       left: (box.left * scaleX).clamp(0, viewWidth - 20),
