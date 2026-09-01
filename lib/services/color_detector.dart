@@ -12,8 +12,8 @@ class JerseyColors {
   JerseyColors({required this.jerseyColor, required this.numberColor});
 
   Map<String, dynamic> toMap() => {
-    'jerseyR': jerseyColor.r, 'jerseyG': jerseyColor.g, 'jerseyB': jerseyColor.b,
-    'numberR': numberColor.r, 'numberG': numberColor.g, 'numberB': numberColor.b,
+    'jerseyR': jerseyColor.red, 'jerseyG': jerseyColor.green, 'jerseyB': jerseyColor.blue,
+    'numberR': numberColor.red, 'numberG': numberColor.green, 'numberB': numberColor.blue,
   };
 
   factory JerseyColors.fromMap(Map<String, dynamic> map) => JerseyColors(
@@ -50,6 +50,32 @@ class ColorDetector {
       return null;
     }
   }
+
+  /// Analyse ALL registration photos together and combine the results
+  /// into a single, more reliable colour reading. Each photo is taken
+  /// at a different distance and often slightly different lighting/angle,
+  /// so combining them evens out any one photo's quirks (glare, shadow,
+  /// motion blur) rather than relying on a single shot.
+  static Future<JerseyColors?> detectColorsFromMultiple(
+      List<String> photoPaths) async {
+    if (photoPaths.isEmpty) return null;
+
+    final List<Uint8List> byteList = [];
+    for (final path in photoPaths) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) {
+          byteList.add(await file.readAsBytes());
+        }
+      } catch (_) {
+        // Skip unreadable photo, still use the others
+      }
+    }
+
+    if (byteList.isEmpty) return null;
+
+    return compute(_analyseMultiplePhotos, _MultiColorAnalysisInput(byteList: byteList));
+  }
 }
 
 class _ColorAnalysisInput {
@@ -57,15 +83,42 @@ class _ColorAnalysisInput {
   _ColorAnalysisInput({required this.bytes});
 }
 
+class _MultiColorAnalysisInput {
+  final List<Uint8List> byteList;
+  _MultiColorAnalysisInput({required this.byteList});
+}
+
 /// Runs in isolate — analyses the image to separate jersey fabric
 /// colour from number/text colour using a clustering approach.
 JerseyColors? _analyseColors(_ColorAnalysisInput input) {
+  final samples = _extractSamples(input.bytes);
+  if (samples == null || samples.isEmpty) return null;
+  return _classifyColors(samples);
+}
+
+/// Runs in isolate — combines pixel samples from ALL registration
+/// photos into one pool, then classifies jersey vs number colour
+/// from the combined data. This produces a more reliable result than
+/// any single photo since it averages out per-photo lighting quirks.
+JerseyColors? _analyseMultiplePhotos(_MultiColorAnalysisInput input) {
+  final List<_PixelSample> allSamples = [];
+
+  for (final bytes in input.byteList) {
+    final samples = _extractSamples(bytes);
+    if (samples != null) allSamples.addAll(samples);
+  }
+
+  if (allSamples.isEmpty) return null;
+  return _classifyColors(allSamples);
+}
+
+/// Extracts raw pixel samples from the centre "AIM HERE" region of
+/// a single photo. Shared by both single- and multi-photo analysis.
+List<_PixelSample>? _extractSamples(Uint8List bytes) {
   try {
-    final image = img.decodeImage(input.bytes);
+    final image = img.decodeImage(bytes);
     if (image == null) return null;
 
-    // Focus on the centre region — matches the "AIM HERE" guide box
-    // shown during registration (roughly centre 35% x 25% of frame)
     final cropX = (image.width  * 0.325).toInt();
     final cropY = (image.height * 0.375).toInt();
     final cropW = (image.width  * 0.35).toInt();
@@ -75,7 +128,6 @@ JerseyColors? _analyseColors(_ColorAnalysisInput input) {
       image, x: cropX, y: cropY, width: cropW, height: cropH,
     );
 
-    // Collect all pixel colours and their luminance in this region
     final List<_PixelSample> samples = [];
     for (int y = 0; y < region.height; y += 2) {
       for (int x = 0; x < region.width; x += 2) {
@@ -87,47 +139,39 @@ JerseyColors? _analyseColors(_ColorAnalysisInput input) {
         samples.add(_PixelSample(r: r, g: g, b: b, luminance: luminance));
       }
     }
-
-    if (samples.isEmpty) return null;
-
-    // Sort by luminance to separate bright pixels (likely number/text)
-    // from darker/mid-tone pixels (likely jersey fabric)
-    samples.sort((a, b) => a.luminance.compareTo(b.luminance));
-
-    // The jersey fabric is typically the majority colour (most common
-    // luminance band), while the number is a minority high-contrast
-    // colour (either much brighter or much darker than the fabric)
-
-    // Take the middle 60% of samples by luminance as "fabric" —
-    // excludes the very brightest and very darkest outliers which
-    // are likely the number/text edges and shadows
-    final fabricStart = (samples.length * 0.20).toInt();
-    final fabricEnd   = (samples.length * 0.80).toInt();
-    final fabricSamples = samples.sublist(fabricStart, fabricEnd);
-
-    final jerseyColor = _averageColor(fabricSamples);
-
-    // The number colour is likely at one of the luminance extremes —
-    // check both the brightest 15% and darkest 15% and pick whichever
-    // has the strongest contrast against the fabric colour
-    final brightSamples = samples.sublist((samples.length * 0.85).toInt());
-    final darkSamples   = samples.sublist(0, (samples.length * 0.15).toInt());
-
-    final brightColor = _averageColor(brightSamples);
-    final darkColor    = _averageColor(darkSamples);
-
-    final contrastBright = _colorDistance(jerseyColor, brightColor);
-    final contrastDark   = _colorDistance(jerseyColor, darkColor);
-
-    final numberColor = contrastBright > contrastDark ? brightColor : darkColor;
-
-    return JerseyColors(
-      jerseyColor: Color.fromARGB(255, jerseyColor.$1, jerseyColor.$2, jerseyColor.$3),
-      numberColor: Color.fromARGB(255, numberColor.$1, numberColor.$2, numberColor.$3),
-    );
+    return samples;
   } catch (_) {
     return null;
   }
+}
+
+/// Classifies a pool of pixel samples into jersey (fabric) colour and
+/// number (text) colour based on luminance clustering.
+JerseyColors _classifyColors(List<_PixelSample> samples) {
+  final sorted = List<_PixelSample>.from(samples)
+    ..sort((a, b) => a.luminance.compareTo(b.luminance));
+
+  final fabricStart = (sorted.length * 0.20).toInt();
+  final fabricEnd   = (sorted.length * 0.80).toInt();
+  final fabricSamples = sorted.sublist(fabricStart, fabricEnd);
+
+  final jerseyColor = _averageColor(fabricSamples);
+
+  final brightSamples = sorted.sublist((sorted.length * 0.85).toInt());
+  final darkSamples    = sorted.sublist(0, (sorted.length * 0.15).toInt());
+
+  final brightColor = _averageColor(brightSamples);
+  final darkColor    = _averageColor(darkSamples);
+
+  final contrastBright = _colorDistance(jerseyColor, brightColor);
+  final contrastDark   = _colorDistance(jerseyColor, darkColor);
+
+  final numberColor = contrastBright > contrastDark ? brightColor : darkColor;
+
+  return JerseyColors(
+    jerseyColor: Color.fromARGB(255, jerseyColor.$1, jerseyColor.$2, jerseyColor.$3),
+    numberColor: Color.fromARGB(255, numberColor.$1, numberColor.$2, numberColor.$3),
+  );
 }
 
 class _PixelSample {

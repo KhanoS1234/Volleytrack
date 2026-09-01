@@ -132,17 +132,17 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
         _capturing = false;
       });
 
-      // Auto-detect jersey and number colours from the FIRST photo only —
-      // it's the closest, clearest shot and best represents true colours
-      if (_photoPaths.length == 1) {
-        setState(() => _detectingColors = true);
-        final colors = await ColorDetector.detectColors(savedPath);
-        if (mounted) {
-          setState(() {
-            _detectedColors = colors;
-            _detectingColors = false;
-          });
-        }
+      // Re-detect jersey and number colours using ALL photos taken so
+      // far. Running this after every capture (not just the first)
+      // means the result improves as more photos come in, averaging
+      // out any single photo's lighting quirks or glare.
+      setState(() => _detectingColors = true);
+      final colors = await ColorDetector.detectColorsFromMultiple(_photoPaths);
+      if (mounted) {
+        setState(() {
+          _detectedColors = colors;
+          _detectingColors = false;
+        });
       }
     } catch (e) {
       debugPrint('=== PHOTO CAPTURE ERROR === $e');
@@ -158,13 +158,23 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
     }
   }
 
-  void _removePhoto(int index) {
-    setState(() {
-      _photoPaths.removeAt(index);
-      // If the first (colour-source) photo was removed, clear
-      // detected colours so they get re-detected on next photo 1
-      if (index == 0) _detectedColors = null;
-    });
+  void _removePhoto(int index) async {
+    setState(() => _photoPaths.removeAt(index));
+
+    // Re-detect colours from whatever photos remain, or clear if none left
+    if (_photoPaths.isEmpty) {
+      setState(() => _detectedColors = null);
+      return;
+    }
+
+    setState(() => _detectingColors = true);
+    final colors = await ColorDetector.detectColorsFromMultiple(_photoPaths);
+    if (mounted) {
+      setState(() {
+        _detectedColors = colors;
+        _detectingColors = false;
+      });
+    }
   }
 
   void _savePlayer() {
@@ -272,7 +282,8 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Doesn\'t look right? Remove photo 1 below and retake it.',
+            'Combined from ${_photoPaths.length} photo${_photoPaths.length == 1 ? '' : 's'}. '
+            'Doesn\'t look right? Remove a photo below and retake it.',
             style: GoogleFonts.inter(fontSize: 10, color: VTColors.muted),
           ),
         ],
