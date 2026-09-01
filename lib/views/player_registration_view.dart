@@ -530,7 +530,12 @@ class _PlayerRegistrationViewState extends State<PlayerRegistrationView> {
                         fit: StackFit.expand,
                         children: [
                           if (_cameraReady && _cameraController != null)
-                            CameraPreview(_cameraController!)
+                            Center(
+                              child: AspectRatio(
+                                aspectRatio: _cameraController!.value.aspectRatio,
+                                child: CameraPreview(_cameraController!),
+                              ),
+                            )
                           else
                             Center(
                               child: Column(
