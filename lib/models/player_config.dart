@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'color_detector.dart';
+import '../services/color_detector.dart';
 
 class PlayerConfig {
   final String jersey;

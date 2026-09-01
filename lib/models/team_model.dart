@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:ui' show Color;
-import 'color_detector.dart';
+import '../services/color_detector.dart';
 
 class PlayerRegistration {
   final String jersey;
