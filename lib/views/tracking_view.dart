@@ -92,193 +92,72 @@ class _TrackingViewState extends State<TrackingView>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Column(
+      body: Stack(
+        fit: StackFit.expand,
         children: [
-          // Camera — 60% of screen
-          Expanded(
-            flex: 60,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _buildCamera(),
+          _buildCamera(),
 
-                // Skeleton overlays for all players
-                ...widget.players.map((p) {
-                  final visible = _vm.playerVisible[p.jersey] ?? false;
-                  if (!visible) return const SizedBox.shrink();
-                  final landmarks = _vm.skeletons[p.jersey] ?? [];
-                  if (landmarks.isEmpty) return const SizedBox.shrink();
-                  return CustomPaint(
-                    painter: _SkeletonPainter(
-                      landmarks: landmarks,
-                      color: p.color,
-                      cameraController: _vm.cameraController,
-                      visible: _vm.playerVisible[p.jersey] ?? false,
-                    ),
-                  );
-                }),
+          // Skeleton overlays for all players
+          ...widget.players.map((p) {
+            final visible = _vm.playerVisible[p.jersey] ?? false;
+            if (!visible) return const SizedBox.shrink();
+            final landmarks = _vm.skeletons[p.jersey] ?? [];
+            if (landmarks.isEmpty) return const SizedBox.shrink();
+            return CustomPaint(
+              painter: _SkeletonPainter(
+                landmarks: landmarks,
+                color: p.color,
+                cameraController: _vm.cameraController,
+                visible: _vm.playerVisible[p.jersey] ?? false,
+              ),
+            );
+          }),
 
-                // Scan line when searching
-                if (!widget.players.any((p) => _vm.playerLocked[p.jersey] == true))
-                  AnimatedBuilder(
-                    animation: _scanController,
-                    builder: (_, __) => Positioned(
-                      top: _scanController.value *
-                          MediaQuery.of(context).size.height *
-                          0.60,
-                      left: 0,
-                      right: 0,
-                      child: Container(
-                        height: 2,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(colors: [
-                            Colors.transparent,
-                            VTColors.blockCyan.withValues(alpha: 0.6),
-                            Colors.transparent,
-                          ]),
-                        ),
-                      ),
-                    ),
+          // Scan line when searching
+          if (!widget.players.any((p) => _vm.playerLocked[p.jersey] == true))
+            AnimatedBuilder(
+              animation: _scanController,
+              builder: (_, __) => Positioned(
+                top: _scanController.value * MediaQuery.of(context).size.height,
+                left: 0,
+                right: 0,
+                child: Container(
+                  height: 2,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(colors: [
+                      Colors.transparent,
+                      VTColors.blockCyan.withValues(alpha: 0.6),
+                      Colors.transparent,
+                    ]),
                   ),
-
-                // Corner brackets
-                _corner(top: true, left: true),
-                _corner(top: true, left: false),
-                _corner(top: false, left: true),
-                _corner(top: false, left: false),
-
-                // Bounding boxes for all players
-                ...widget.players.map((p) => _buildPlayerBox(p)),
-
-                // HUD top bar
-                _buildHUD(),
-
-                // Jersey sensitivity tuning icon — DEVELOPMENT ONLY.
-                // Tap to open sliders in a popup instead of always
-                // showing them, keeping the camera view uncluttered.
-                _buildTuningIcon(),
-
-                // Event flash
-                if (_vm.showFlash) _buildFlash(),
-              ],
-            ),
-          ),
-
-          // Player cards + controls — 40% of screen
-          Expanded(
-            flex: 40,
-            child: Container(
-              color: VTColors.courtBlue,
-              child: Column(
-                children: [
-                  // Player stat cards — side by side
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                      child: Row(
-                        children: widget.players.asMap().entries.map((entry) {
-                          final i = entry.key;
-                          final p = entry.value;
-                          return Expanded(
-                            child: GestureDetector(
-                              onTap: () => _vm.selectPlayer(i),
-                              child: _PlayerCard(
-                                player: p,
-                                stats: _vm.stats[p.jersey]!,
-                                isSelected: _vm.selectedPlayerIndex == i,
-                                isLocked: _vm.playerLocked[p.jersey] ?? false,
-                                isVisible: _vm.playerVisible[p.jersey] ?? false,
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ),
-
-                  // Manual log buttons for selected player
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: _vm.selectedPlayer.color,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              'LOGGING FOR #${_vm.selectedPlayer.jersey}',
-                              style: GoogleFonts.inter(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 1,
-                                color: VTColors.textDim,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Row(children: [
-                          Expanded(
-                              child: _manualBtn(
-                                  '💥',
-                                  'HIT',
-                                  VTColors.spikeGold,
-                                  () => _vm.recordEvent(
-                                      _vm.selectedPlayer.jersey, EventType.hit))),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: _manualBtn(
-                                  '🤚',
-                                  'BLOCK',
-                                  VTColors.blockCyan,
-                                  () => _vm.recordEvent(
-                                      _vm.selectedPlayer.jersey, EventType.block))),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: _manualBtn(
-                                  '✅',
-                                  'POINT',
-                                  VTColors.pointGreen,
-                                  () => _vm.recordEvent(
-                                      _vm.selectedPlayer.jersey, EventType.point))),
-                        ]),
-                      ],
-                    ),
-                  ),
-
-                  // End session
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton(
-                        onPressed: _endSession,
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(
-                              color: VTColors.dangerRed, width: 1.5),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14)),
-                        ),
-                        child: Text('END SESSION',
-                            style: GoogleFonts.bebasNeue(
-                                fontSize: 16,
-                                letterSpacing: 2,
-                                color: VTColors.dangerRed)),
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
+
+          // Corner brackets
+          _corner(top: true, left: true),
+          _corner(top: true, left: false),
+          _corner(top: false, left: true),
+          _corner(top: false, left: false),
+
+          // Bounding boxes for all players
+          ...widget.players.map((p) => _buildPlayerBox(p)),
+
+          // HUD top bar
+          _buildHUD(),
+
+          // Log stats icon — opens player selector + HIT/BLOCK/POINT
+          // buttons in a popup, keeping the camera view uncluttered
+          _buildLogIcon(),
+
+          // Jersey sensitivity tuning icon — DEVELOPMENT ONLY.
+          _buildTuningIcon(),
+
+          // End session icon — always accessible without opening a popup
+          _buildEndSessionIcon(),
+
+          // Event flash
+          if (_vm.showFlash) _buildFlash(),
         ],
       ),
     );
@@ -341,7 +220,7 @@ class _TrackingViewState extends State<TrackingView>
     if (box == null) return const SizedBox.shrink();
 
     final screenSize = MediaQuery.of(context).size;
-    final viewHeight = screenSize.height * 0.60;
+    final viewHeight = screenSize.height;
     final viewWidth = screenSize.width;
 
     final scaleX = viewWidth /
@@ -482,6 +361,220 @@ class _TrackingViewState extends State<TrackingView>
                   style: GoogleFonts.jetBrainsMono(
                       fontSize: 13, color: VTColors.netWhite)),
             ]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Small icon — tap to open the player selector and HIT/BLOCK/POINT
+  /// manual logging buttons in a popup, keeping the camera view clear.
+  Widget _buildLogIcon() {
+    return Positioned(
+      left: 16,
+      bottom: 16,
+      child: GestureDetector(
+        onTap: _openLogDialog,
+        child: Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.6),
+            shape: BoxShape.circle,
+            border: Border.all(color: _vm.selectedPlayer.color.withValues(alpha: 0.6)),
+          ),
+          child: Icon(Icons.sports_volleyball,
+              color: _vm.selectedPlayer.color, size: 20),
+        ),
+      ),
+    );
+  }
+
+  void _openLogDialog() {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: VTColors.courtBlue,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: VTColors.blockCyan.withValues(alpha: 0.3)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: StatefulBuilder(
+              builder: (context, setDialogState) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.sports_volleyball,
+                            color: VTColors.blockCyan, size: 18),
+                        const SizedBox(width: 8),
+                        Text('LOG STATS',
+                            style: GoogleFonts.bebasNeue(
+                                fontSize: 16,
+                                letterSpacing: 2,
+                                color: VTColors.blockCyan)),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close,
+                              color: VTColors.textDim, size: 20),
+                          onPressed: () => Navigator.pop(dialogContext),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Player selector chips — tap to switch who
+                    // HIT/BLOCK/POINT applies to
+                    Row(
+                      children: widget.players.asMap().entries.map((entry) {
+                        final i = entry.key;
+                        final p = entry.value;
+                        final selected = _vm.selectedPlayerIndex == i;
+                        return Expanded(
+                          child: GestureDetector(
+                            onTap: () {
+                              _vm.selectPlayer(i);
+                              setDialogState(() {});
+                              setState(() {});
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(horizontal: 3),
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? p.color.withValues(alpha: 0.15)
+                                    : VTColors.surface,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: selected
+                                      ? p.color
+                                      : VTColors.blockCyan.withValues(alpha: 0.15),
+                                  width: selected ? 2 : 1,
+                                ),
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('#${p.jersey}',
+                                      style: GoogleFonts.bebasNeue(
+                                          fontSize: 18,
+                                          color: selected
+                                              ? p.color
+                                              : VTColors.textDim)),
+                                  Text(
+                                    '${_vm.stats[p.jersey]!.hits}H '
+                                    '${_vm.stats[p.jersey]!.blocks}B '
+                                    '${_vm.stats[p.jersey]!.pointPercentage}%',
+                                    style: GoogleFonts.jetBrainsMono(
+                                        fontSize: 9, color: VTColors.textDim),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    Text(
+                      'LOGGING FOR #${_vm.selectedPlayer.jersey}',
+                      style: GoogleFonts.inter(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1,
+                        color: VTColors.textDim,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // HIT / BLOCK / POINT buttons
+                    Row(children: [
+                      Expanded(
+                          child: _manualBtn('💥', 'HIT', VTColors.spikeGold, () {
+                        _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.hit);
+                        setDialogState(() {});
+                      })),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: _manualBtn('🤚', 'BLOCK', VTColors.blockCyan, () {
+                        _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.block);
+                        setDialogState(() {});
+                      })),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: _manualBtn('✅', 'POINT', VTColors.pointGreen, () {
+                        _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.point);
+                        setDialogState(() {});
+                      })),
+                    ]),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Small end-session icon — kept directly accessible on screen
+  /// (not behind a popup) since ending the session is a critical,
+  /// time-sensitive action.
+  Widget _buildEndSessionIcon() {
+    return Positioned(
+      right: 16,
+      // Positioned below the HUD row (timer badge) to avoid overlapping it
+      top: MediaQuery.of(context).padding.top + 60,
+      child: GestureDetector(
+        onTap: _confirmEndSession,
+        child: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.6),
+            shape: BoxShape.circle,
+            border: Border.all(color: VTColors.dangerRed.withValues(alpha: 0.6)),
+          ),
+          child: const Icon(Icons.stop_circle_outlined,
+              color: VTColors.dangerRed, size: 20),
+        ),
+      ),
+    );
+  }
+
+  void _confirmEndSession() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: VTColors.surface,
+        title: Text('End Session?',
+            style: GoogleFonts.bebasNeue(
+                fontSize: 20, color: VTColors.netWhite, letterSpacing: 1)),
+        content: Text('This will stop tracking and show the session summary.',
+            style: GoogleFonts.inter(fontSize: 13, color: VTColors.textDim)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text('Cancel',
+                style: GoogleFonts.inter(color: VTColors.textDim)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _endSession();
+            },
+            child: Text('End Session',
+                style: GoogleFonts.inter(
+                    color: VTColors.dangerRed, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
