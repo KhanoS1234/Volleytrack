@@ -12,9 +12,14 @@ import '../viewmodels/tracking_viewmodel.dart';
 import 'multi_stats_view.dart';
 
 class TrackingView extends StatefulWidget {
-  final List<PlayerConfig> players;
+  final List<PlayerConfig> initialPlayers;
+  final List<PlayerConfig> fullRoster;
 
-  const TrackingView({super.key, required this.players});
+  const TrackingView({
+    super.key,
+    required this.initialPlayers,
+    required this.fullRoster,
+  });
 
   @override
   State<TrackingView> createState() => _TrackingViewState();
@@ -40,7 +45,10 @@ class _TrackingViewState extends State<TrackingView>
       DeviceOrientation.landscapeRight,
     ]);
 
-    _vm = TrackingViewModel(players: widget.players);
+    _vm = TrackingViewModel(
+      initialPlayers: widget.initialPlayers,
+      fullRoster: widget.fullRoster,
+    );
     _scanController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
@@ -66,12 +74,27 @@ class _TrackingViewState extends State<TrackingView>
   Future<void> _endSession() async {
     final results = await _vm.endSession();
     if (!mounted) return;
+
+    // Build a PlayerConfig list matching the results order, pulling
+    // from the full roster since some players may have been subbed
+    // off (no longer in activePlayers) but still appear in the results
+    final resultPlayers = results.map((s) {
+      return widget.fullRoster.firstWhere(
+        (p) => p.jersey == s.jersey,
+        orElse: () => PlayerConfig(
+          jersey: s.jersey,
+          name: s.name,
+          color: PlayerColors.colorForJersey(s.jersey),
+        ),
+      );
+    }).toList();
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (_) => MultiStatsView(
           playerStats: results,
-          players: widget.players,
+          players: resultPlayers,
         ),
       ),
     );
@@ -98,7 +121,7 @@ class _TrackingViewState extends State<TrackingView>
           _buildCamera(),
 
           // Skeleton overlays for all players
-          ...widget.players.map((p) {
+          ..._vm.activePlayers.map((p) {
             final visible = _vm.playerVisible[p.jersey] ?? false;
             if (!visible) return const SizedBox.shrink();
             final landmarks = _vm.skeletons[p.jersey] ?? [];
@@ -114,7 +137,7 @@ class _TrackingViewState extends State<TrackingView>
           }),
 
           // Scan line when searching
-          if (!widget.players.any((p) => _vm.playerLocked[p.jersey] == true))
+          if (!_vm.activePlayers.any((p) => _vm.playerLocked[p.jersey] == true))
             AnimatedBuilder(
               animation: _scanController,
               builder: (_, __) => Positioned(
@@ -141,7 +164,7 @@ class _TrackingViewState extends State<TrackingView>
           _corner(top: false, left: false),
 
           // Bounding boxes for all players
-          ...widget.players.map((p) => _buildPlayerBox(p)),
+          ..._vm.activePlayers.map((p) => _buildPlayerBox(p)),
 
           // HUD top bar
           _buildHUD(),
@@ -149,6 +172,9 @@ class _TrackingViewState extends State<TrackingView>
           // Log stats icon — opens player selector + HIT/BLOCK/POINT
           // buttons in a popup, keeping the camera view uncluttered
           _buildLogIcon(),
+
+          // Manage Roster icon — sub players on/off during the session
+          _buildRosterIcon(),
 
           // Jersey sensitivity tuning icon — DEVELOPMENT ONLY.
           _buildTuningIcon(),
@@ -312,7 +338,7 @@ class _TrackingViewState extends State<TrackingView>
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Row(
-            children: widget.players
+            children: _vm.activePlayers
                 .map((p) => Container(
                       margin: const EdgeInsets.only(right: 6),
                       padding:
@@ -367,6 +393,249 @@ class _TrackingViewState extends State<TrackingView>
     );
   }
 
+  /// Icon (bottom centre) — opens the roster management dialog for
+  /// substituting players on/off during a live session.
+  Widget _buildRosterIcon() {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 16,
+      child: Center(
+        child: GestureDetector(
+          onTap: _openRosterDialog,
+          child: Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.6),
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: VTColors.pointGreen.withValues(alpha: 0.6)),
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                const Icon(Icons.swap_horiz,
+                    color: VTColors.pointGreen, size: 20),
+                if (_vm.benchPlayers.isNotEmpty)
+                  Positioned(
+                    top: 2,
+                    right: 2,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: VTColors.spikeGold,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openRosterDialog() {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: VTColors.courtBlue,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side:
+                BorderSide(color: VTColors.pointGreen.withValues(alpha: 0.3)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: StatefulBuilder(
+              builder: (context, setDialogState) {
+                return ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(context).size.height * 0.7,
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.swap_horiz,
+                                color: VTColors.pointGreen, size: 18),
+                            const SizedBox(width: 8),
+                            Text('MANAGE ROSTER',
+                                style: GoogleFonts.bebasNeue(
+                                    fontSize: 16,
+                                    letterSpacing: 2,
+                                    color: VTColors.pointGreen)),
+                            const Spacer(),
+                            IconButton(
+                              icon: const Icon(Icons.close,
+                                  color: VTColors.textDim, size: 20),
+                              onPressed: () => Navigator.pop(dialogContext),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+
+                        // On court section
+                        Text(
+                          'ON COURT (${_vm.activePlayers.length}/${TrackingViewModel.maxActivePlayers})',
+                          style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 1,
+                              color: VTColors.pointGreen),
+                        ),
+                        const SizedBox(height: 8),
+
+                        if (_vm.activePlayers.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Text('No players on court',
+                                style: GoogleFonts.inter(
+                                    fontSize: 12, color: VTColors.textDim)),
+                          )
+                        else
+                          ..._vm.activePlayers.map((p) => Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: p.color.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                      color: p.color.withValues(alpha: 0.4)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 10,
+                                      height: 10,
+                                      decoration: BoxDecoration(
+                                          color: p.color,
+                                          shape: BoxShape.circle),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text('#${p.jersey}',
+                                        style: GoogleFonts.bebasNeue(
+                                            fontSize: 16, color: p.color)),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(p.name,
+                                          style: GoogleFonts.inter(
+                                              fontSize: 12,
+                                              color: VTColors.netWhite),
+                                          overflow: TextOverflow.ellipsis),
+                                    ),
+                                    TextButton(
+                                      onPressed: () {
+                                        _vm.removePlayerPermanently(p.jersey);
+                                        setDialogState(() {});
+                                        setState(() {});
+                                      },
+                                      style: TextButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 4),
+                                        minimumSize: Size.zero,
+                                        tapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                      child: Text('REMOVE',
+                                          style: GoogleFonts.bebasNeue(
+                                              fontSize: 12,
+                                              letterSpacing: 1,
+                                              color: VTColors.dangerRed)),
+                                    ),
+                                  ],
+                                ),
+                              )),
+
+                        const SizedBox(height: 16),
+
+                        // Bench section — informational only. Anyone
+                        // here is being actively searched for by the
+                        // camera; they'll move to ON COURT automatically
+                        // the moment they're confidently detected.
+                        Text(
+                          'BENCH (${_vm.benchPlayers.length}) · searching automatically',
+                          style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 1,
+                              color: VTColors.textDim),
+                        ),
+                        const SizedBox(height: 8),
+
+                        if (_vm.benchPlayers.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Text('Everyone registered is on court',
+                                style: GoogleFonts.inter(
+                                    fontSize: 12, color: VTColors.textDim)),
+                          )
+                        else
+                          ..._vm.benchPlayers.map((p) => Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: VTColors.surface,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                      color: VTColors.blockCyan
+                                          .withValues(alpha: 0.15)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Text('#${p.jersey}',
+                                        style: GoogleFonts.bebasNeue(
+                                            fontSize: 16,
+                                            color: VTColors.textDim)),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(p.name,
+                                          style: GoogleFonts.inter(
+                                              fontSize: 12,
+                                              color: VTColors.netWhite),
+                                          overflow: TextOverflow.ellipsis),
+                                    ),
+                                    // No action button — promotion is
+                                    // fully automatic on detection
+                                    Icon(Icons.search,
+                                        size: 14, color: VTColors.textDim),
+                                  ],
+                                ),
+                              )),
+
+                        if (_vm.isRosterFull)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              'On-court limit reached — a spot must free up before anyone else can be detected',
+                              style: GoogleFonts.inter(
+                                  fontSize: 11, color: VTColors.spikeGold),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   /// Small icon — tap to open the player selector and HIT/BLOCK/POINT
   /// manual logging buttons in a popup, keeping the camera view clear.
   Widget _buildLogIcon() {
@@ -381,10 +650,12 @@ class _TrackingViewState extends State<TrackingView>
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.6),
             shape: BoxShape.circle,
-            border: Border.all(color: _vm.selectedPlayer.color.withValues(alpha: 0.6)),
+            border: Border.all(
+                color: (_vm.selectedPlayer?.color ?? VTColors.textDim)
+                    .withValues(alpha: 0.6)),
           ),
           child: Icon(Icons.sports_volleyball,
-              color: _vm.selectedPlayer.color, size: 20),
+              color: _vm.selectedPlayer?.color ?? VTColors.textDim, size: 20),
         ),
       ),
     );
@@ -430,92 +701,104 @@ class _TrackingViewState extends State<TrackingView>
                     ),
                     const SizedBox(height: 16),
 
-                    // Player selector chips — tap to switch who
-                    // HIT/BLOCK/POINT applies to
-                    Row(
-                      children: widget.players.asMap().entries.map((entry) {
-                        final i = entry.key;
-                        final p = entry.value;
-                        final selected = _vm.selectedPlayerIndex == i;
-                        return Expanded(
-                          child: GestureDetector(
-                            onTap: () {
-                              _vm.selectPlayer(i);
-                              setDialogState(() {});
-                              setState(() {});
-                            },
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 3),
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                color: selected
-                                    ? p.color.withValues(alpha: 0.15)
-                                    : VTColors.surface,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
+                    if (_vm.activePlayers.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          'No players currently on court.\nUse Manage Roster to sub someone on.',
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.inter(
+                              fontSize: 12, color: VTColors.textDim),
+                        ),
+                      )
+                    else ...[
+                      // Player selector chips — tap to switch who
+                      // HIT/BLOCK/POINT applies to
+                      Row(
+                        children: _vm.activePlayers.asMap().entries.map((entry) {
+                          final i = entry.key;
+                          final p = entry.value;
+                          final selected = _vm.selectedPlayerIndex == i;
+                          return Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                _vm.selectPlayer(i);
+                                setDialogState(() {});
+                                setState(() {});
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(horizontal: 3),
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                decoration: BoxDecoration(
                                   color: selected
-                                      ? p.color
-                                      : VTColors.blockCyan.withValues(alpha: 0.15),
-                                  width: selected ? 2 : 1,
+                                      ? p.color.withValues(alpha: 0.15)
+                                      : VTColors.surface,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: selected
+                                        ? p.color
+                                        : VTColors.blockCyan.withValues(alpha: 0.15),
+                                    width: selected ? 2 : 1,
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text('#${p.jersey}',
+                                        style: GoogleFonts.bebasNeue(
+                                            fontSize: 18,
+                                            color: selected
+                                                ? p.color
+                                                : VTColors.textDim)),
+                                    Text(
+                                      '${_vm.stats[p.jersey]!.hits}H '
+                                      '${_vm.stats[p.jersey]!.blocks}B '
+                                      '${_vm.stats[p.jersey]!.pointPercentage}%',
+                                      style: GoogleFonts.jetBrainsMono(
+                                          fontSize: 9, color: VTColors.textDim),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text('#${p.jersey}',
-                                      style: GoogleFonts.bebasNeue(
-                                          fontSize: 18,
-                                          color: selected
-                                              ? p.color
-                                              : VTColors.textDim)),
-                                  Text(
-                                    '${_vm.stats[p.jersey]!.hits}H '
-                                    '${_vm.stats[p.jersey]!.blocks}B '
-                                    '${_vm.stats[p.jersey]!.pointPercentage}%',
-                                    style: GoogleFonts.jetBrainsMono(
-                                        fontSize: 9, color: VTColors.textDim),
-                                  ),
-                                ],
-                              ),
                             ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    Text(
-                      'LOGGING FOR #${_vm.selectedPlayer.jersey}',
-                      style: GoogleFonts.inter(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 1,
-                        color: VTColors.textDim,
+                          );
+                        }).toList(),
                       ),
-                    ),
-                    const SizedBox(height: 8),
 
-                    // HIT / BLOCK / POINT buttons
-                    Row(children: [
-                      Expanded(
-                          child: _manualBtn('💥', 'HIT', VTColors.spikeGold, () {
-                        _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.hit);
-                        setDialogState(() {});
-                      })),
-                      const SizedBox(width: 8),
-                      Expanded(
-                          child: _manualBtn('🤚', 'BLOCK', VTColors.blockCyan, () {
-                        _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.block);
-                        setDialogState(() {});
-                      })),
-                      const SizedBox(width: 8),
-                      Expanded(
-                          child: _manualBtn('✅', 'POINT', VTColors.pointGreen, () {
-                        _vm.recordEvent(_vm.selectedPlayer.jersey, EventType.point);
-                        setDialogState(() {});
-                      })),
-                    ]),
+                      const SizedBox(height: 16),
+
+                      Text(
+                        'LOGGING FOR #${_vm.selectedPlayer!.jersey}',
+                        style: GoogleFonts.inter(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 1,
+                          color: VTColors.textDim,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      // HIT / BLOCK / POINT buttons
+                      Row(children: [
+                        Expanded(
+                            child: _manualBtn('💥', 'HIT', VTColors.spikeGold, () {
+                          _vm.recordEvent(_vm.selectedPlayer!.jersey, EventType.hit);
+                          setDialogState(() {});
+                        })),
+                        const SizedBox(width: 8),
+                        Expanded(
+                            child: _manualBtn('🤚', 'BLOCK', VTColors.blockCyan, () {
+                          _vm.recordEvent(_vm.selectedPlayer!.jersey, EventType.block);
+                          setDialogState(() {});
+                        })),
+                        const SizedBox(width: 8),
+                        Expanded(
+                            child: _manualBtn('✅', 'POINT', VTColors.pointGreen, () {
+                          _vm.recordEvent(_vm.selectedPlayer!.jersey, EventType.point);
+                          setDialogState(() {});
+                        })),
+                      ]),
+                    ],
                   ],
                 );
               },
@@ -768,9 +1051,9 @@ class _TrackingViewState extends State<TrackingView>
     final jersey = _vm.flashJersey;
     if (type == null || jersey == null) return const SizedBox.shrink();
 
-    final player = widget.players.firstWhere(
+    final player = _vm.activePlayers.firstWhere(
       (p) => p.jersey == jersey,
-      orElse: () => widget.players.first,
+      orElse: () => _vm.activePlayers.first,
     );
 
     final styles = {

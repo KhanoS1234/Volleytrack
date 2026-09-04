@@ -74,6 +74,14 @@ class CameraService {
   static const double _sustainedOverlapThreshold = 0.60; // 60% overlap
   static const int _sustainedOverlapFrames = 60; // ~2 seconds at 30fps
 
+  // Maximum number of players that can be simultaneously LOCKED/on-court
+  // at once (performance ceiling on skeleton tracking + appearance
+  // verification). The SEARCH pool (OCR/photo/colour matching) still
+  // covers the full registered roster regardless of this cap — this
+  // only limits how many can be actively tracked with a box/skeleton
+  // at the same time. Should match TrackingViewModel.maxActivePlayers.
+  static const int maxOnCourtPlayers = 6;
+
   final Map<String, int>     _consecutiveDetections = {};
   final Map<String, Rect?>   _lastKnownBoxes        = {};
   final Map<String, int>     _framesSinceDetection  = {};
@@ -96,7 +104,12 @@ class CameraService {
   final Map<String, int> _sustainedOverlapCounters = {};
 
   Function(String jersey, Rect boundingBox, String source)? onPlayerDetected;
-  Function(String jersey)?                                  onPlayerLost;
+  // wasLocked=true means this player WAS actively on-court/tracked and
+  // has now been dropped (real "went off court" event — should demote
+  // them from active tracking). wasLocked=false means we simply haven't
+  // found them yet during the initial search (not a demotion, they were
+  // never on court in the first place).
+  Function(String jersey, bool wasLocked)? onPlayerLost;
   Function(List<PoseLandmark> landmarks, double confidence, String jersey)?
       onPoseUpdated;
   // Fired when a proximity crossing is detected between two players
@@ -116,6 +129,31 @@ class CameraService {
   /// used as a pre-filter and confidence booster during tracking.
   void registerPlayerColors(String jersey, JerseyColors? colors) {
     _colorMatcher.registerPlayerColor(jersey, colors);
+  }
+
+  /// SUBSTITUTION — remove a player from active tracking immediately.
+  /// Their stats are preserved by the ViewModel (this only stops the
+  /// camera pipeline from searching for/tracking them further).
+  /// MANUAL OVERRIDE — permanently stop searching for this player for
+  /// the rest of the session (e.g. injury, coach knows they won't
+  /// return). This is DIFFERENT from the normal automatic on/off-court
+  /// detection: automatic demotion (lock timeout) keeps the player in
+  /// the search pool so they can be auto-detected again if they come
+  /// back on court, whereas this removes them from the pool entirely.
+  void removePlayerPermanently(String jersey) {
+    _targetJerseys.remove(jersey);
+    poseAnalysers.remove(jersey)?.reset();
+    _consecutiveDetections.remove(jersey);
+    _lastKnownBoxes.remove(jersey);
+    _framesSinceDetection.remove(jersey);
+    _playerLockedPermanent.remove(jersey);
+    _relockCandidateCount.remove(jersey);
+    _relockCandidatePos.remove(jersey);
+    _lockSource.remove(jersey);
+    _isFrozen.remove(jersey);
+    _framesSinceAppearanceCheck.remove(jersey);
+    _lockedAtTime.remove(jersey);
+    onPlayerLost?.call(jersey, true);
   }
 
   Future<void> startCamera(List<String> targetJerseys) async {
@@ -231,15 +269,19 @@ class CameraService {
 
         if (isLocked) {
           if (framesSince > _maxFramesWithoutDetection) {
+            // Real demotion — was on-court, now undetectable for the
+            // full hold period. Automatically goes back to the bench.
             _resetPlayerLock(jersey);
-            onPlayerLost?.call(jersey);
+            onPlayerLost?.call(jersey, true);
           } else if (_lastKnownBoxes[jersey] != null) {
             onPlayerDetected?.call(
                 jersey, _lastKnownBoxes[jersey]!, _lockSource[jersey] ?? 'SKELETON');
           }
         } else {
           if (framesSince > 30) {
-            onPlayerLost?.call(jersey);
+            // Not a demotion — this player was never locked/on-court
+            // in the first place, we just haven't found them yet
+            onPlayerLost?.call(jersey, false);
           }
         }
       }
@@ -298,7 +340,7 @@ class CameraService {
             }
 
             _resetPlayerLock(toDrop);
-            onPlayerLost?.call(toDrop);
+            onPlayerLost?.call(toDrop, true); // real demotion — was double-locked
             _sustainedOverlapCounters[pairKey] = 0;
           }
         }
@@ -385,7 +427,7 @@ class CameraService {
           // Appearance no longer matches — likely an identity switch.
           // Drop the lock so OCR/photo matching can re-acquire correctly.
           _resetPlayerLock(jersey);
-          onPlayerLost?.call(jersey);
+          onPlayerLost?.call(jersey, true); // real demotion — appearance mismatch
         }
         // If stillMatches is null (couldn't determine), we don't act —
         // avoids false drops from poor lighting or motion blur.
@@ -446,6 +488,17 @@ class CameraService {
           // locking onto the same physical person.
           if (_isPositionOccupiedByOther(jersey, detectedBox)) {
             // Reset candidate tracking — don't lock here, keep searching
+            _relockCandidateCount[jersey] = 0;
+            _relockCandidatePos[jersey]   = null;
+            return;
+          }
+
+          // CAPACITY CHECK — only allow a NEW lock if there's a free
+          // on-court slot. If 6 players are already locked, this
+          // candidate keeps waiting rather than being force-added.
+          final currentlyLocked =
+              _playerLockedPermanent.values.where((v) => v).length;
+          if (currentlyLocked >= maxOnCourtPlayers) {
             _relockCandidateCount[jersey] = 0;
             _relockCandidatePos[jersey]   = null;
             return;

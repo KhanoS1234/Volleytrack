@@ -8,20 +8,36 @@ import '../services/camera_service.dart';
 import '../services/database_service.dart';
 
 class TrackingViewModel extends ChangeNotifier {
-  final List<PlayerConfig> players;
+  // Every registered player on the team. The camera searches for ALL
+  // of these continuously — whoever gets detected automatically
+  // becomes "on court" (up to maxActivePlayers), no manual sub-on
+  // needed. If a locked player can't be found for the hold timeout,
+  // they're automatically dropped back to the bench.
+  final List<PlayerConfig> fullRoster;
+
+  // Currently on-court, actively tracked players — populated and
+  // emptied AUTOMATICALLY based on detection, not manual button taps
+  List<PlayerConfig> activePlayers;
 
   final CameraService   _cameraService = CameraService();
   final DatabaseService _db            = DatabaseService();
 
-  final Map<String, PlayerStats>        stats         = {};
+  static const int maxActivePlayers = 6;
+
+  // Stats persist per jersey across the WHOLE session, including
+  // through automatic on/off-court transitions — a player who goes
+  // off court and is later re-detected keeps their running totals
+  final Map<String, PlayerStats> stats = {};
+  // Every jersey that appeared on court at any point this session —
+  // used to build the final stats summary
+  final Set<String> jerseysThatPlayed = {};
+
   final Map<String, bool>               playerLocked  = {};
   final Map<String, bool>               playerVisible = {};
   final Map<String, Rect?>              playerBoxes   = {};
   final Map<String, List<PoseLandmark>> skeletons     = {};
   final Map<String, double>             confidences   = {};
-  // Which method locked this player: 'OCR', 'PHOTO', or 'SKELETON'
   final Map<String, String>             lockSource    = {};
-  // True while this player is in a proximity crossing (frozen tracking)
   final Map<String, bool>               isCrossing    = {};
 
   bool       showFlash  = false;
@@ -38,30 +54,51 @@ class TrackingViewModel extends ChangeNotifier {
 
   get cameraController => _cameraService.controller;
 
-  TrackingViewModel({required this.players}) {
-    for (final p in players) {
-      stats[p.jersey]         = PlayerStats(jersey: p.jersey, name: p.name);
-      playerLocked[p.jersey]  = false;
-      playerVisible[p.jersey] = false;
-      playerBoxes[p.jersey]   = null;
-      skeletons[p.jersey]     = [];
-      confidences[p.jersey]   = 0.0;
-      lockSource[p.jersey]    = '';
-      isCrossing[p.jersey]    = false;
+  /// Registered players NOT currently on court — these are being
+  /// actively searched for; they'll move to activePlayers automatically
+  /// the moment the camera confidently detects them.
+  List<PlayerConfig> get benchPlayers => fullRoster
+      .where((p) => !activePlayers.any((a) => a.jersey == p.jersey))
+      .toList();
+
+  bool get isRosterFull => activePlayers.length >= maxActivePlayers;
+
+  TrackingViewModel({
+    required List<PlayerConfig> initialPlayers,
+    required this.fullRoster,
+  }) : activePlayers = List.from(initialPlayers) {
+    for (final p in activePlayers) {
+      _initPlayerState(p.jersey, p.name);
     }
   }
 
-  Future<void> initialise() async {
-    if (players.any((p) => p.photoPaths.isNotEmpty)) {
-      for (final p in players) {
-        if (p.photoPaths.isNotEmpty) {
-          await _cameraService.registerPlayerPhotos(p.jersey, p.photoPaths);
-        }
-      }
-    }
+  void _initPlayerState(String jersey, String name) {
+    stats.putIfAbsent(jersey, () => PlayerStats(jersey: jersey, name: name));
+    playerLocked[jersey]  = false;
+    playerVisible[jersey] = false;
+    playerBoxes[jersey]   = null;
+    skeletons[jersey]     = [];
+    confidences[jersey]   = 0.0;
+    lockSource[jersey]    = '';
+    isCrossing[jersey]    = false;
+    jerseysThatPlayed.add(jersey);
+  }
 
-    // Register auto-detected jersey colours for colour-based detection
-    for (final p in players) {
+  void _wirePoseCallbacks(String jersey) {
+    _cameraService.poseAnalysers[jersey]?.onHitDetected = () {
+      recordEvent(jersey, EventType.hit, auto: true, source: 'Pose');
+    };
+    _cameraService.poseAnalysers[jersey]?.onBlockDetected = () {
+      recordEvent(jersey, EventType.block, auto: true, source: 'Pose');
+    };
+  }
+
+  Future<void> initialise() async {
+    // Register reference photos & colours for the FULL roster up front
+    for (final p in fullRoster) {
+      if (p.photoPaths.isNotEmpty) {
+        await _cameraService.registerPlayerPhotos(p.jersey, p.photoPaths);
+      }
       if (p.detectedColors != null) {
         _cameraService.registerPlayerColors(p.jersey, p.detectedColors);
       }
@@ -69,16 +106,35 @@ class TrackingViewModel extends ChangeNotifier {
 
     await _cameraService.initialise();
 
-    for (final p in players) {
-      _cameraService.poseAnalysers[p.jersey]?.onHitDetected = () {
-        recordEvent(p.jersey, EventType.hit, auto: true, source: 'Pose');
-      };
-      _cameraService.poseAnalysers[p.jersey]?.onBlockDetected = () {
-        recordEvent(p.jersey, EventType.block, auto: true, source: 'Pose');
-      };
+    // Wire pose callbacks for the FULL roster — any of them could be
+    // automatically detected and promoted to on-court at any time
+    for (final p in fullRoster) {
+      _wirePoseCallbacks(p.jersey);
     }
 
     _cameraService.onPlayerDetected = (jersey, box, source) {
+      // AUTOMATIC PROMOTION — if this jersey isn't currently on court,
+      // add them now. No manual action needed; this fires the moment
+      // the camera pipeline confidently locks onto them.
+      if (!activePlayers.any((p) => p.jersey == jersey)) {
+        if (activePlayers.length < maxActivePlayers) {
+          final config = fullRoster.firstWhere(
+            (p) => p.jersey == jersey,
+            orElse: () => PlayerConfig(
+              jersey: jersey,
+              name: 'Player #$jersey',
+              color: PlayerColors.colorForJersey(jersey),
+            ),
+          );
+          activePlayers.add(config);
+          _initPlayerState(jersey, config.name);
+        } else {
+          // No free slot — camera_service's own capacity check should
+          // already prevent this, but guard here too just in case
+          return;
+        }
+      }
+
       playerLocked[jersey]  = true;
       playerVisible[jersey] = true;
       playerBoxes[jersey]   = box;
@@ -93,10 +149,29 @@ class TrackingViewModel extends ChangeNotifier {
       notifyListeners();
     };
 
-    _cameraService.onPlayerLost = (jersey) {
+    _cameraService.onPlayerLost = (jersey, wasLocked) {
       playerVisible[jersey] = false;
       lockSource[jersey]    = '';
-      skeletons[jersey]     = []; // clear stale skeleton so it stops rendering
+      skeletons[jersey]     = [];
+
+      if (wasLocked) {
+        // AUTOMATIC DEMOTION — this player was on court and could not
+        // be found for the full hold period (or was manually/watchdog
+        // removed). They go back to the bench automatically. Their
+        // stats stay intact in case they're detected again later.
+        activePlayers.removeWhere((p) => p.jersey == jersey);
+        playerLocked[jersey] = false;
+        _playerLostTimers[jersey]?.cancel();
+
+        if (activePlayers.isEmpty) {
+          selectedPlayerIndex = 0;
+        } else if (selectedPlayerIndex >= activePlayers.length) {
+          selectedPlayerIndex = activePlayers.length - 1;
+        }
+      }
+      // If wasLocked is false, this player was never on court in the
+      // first place — nothing to demote, just still searching for them
+
       notifyListeners();
     };
 
@@ -105,9 +180,6 @@ class TrackingViewModel extends ChangeNotifier {
       isCrossing[jerseyB] = true;
       notifyListeners();
 
-      // Clear the crossing flag shortly after — it will be re-set every
-      // frame while the actual overlap continues, so this just handles
-      // the visual fade-out once they separate
       Timer(const Duration(milliseconds: 800), () {
         isCrossing[jerseyA] = false;
         isCrossing[jerseyB] = false;
@@ -121,17 +193,44 @@ class TrackingViewModel extends ChangeNotifier {
       notifyListeners();
     };
 
-    await _cameraService.startCamera(players.map((p) => p.jersey).toList());
+    // Search space is the FULL roster from the very start — this is
+    // what enables automatic detection/promotion of any registered
+    // player, not just the ones pre-selected on the setup screen
+    await _cameraService.startCamera(fullRoster.map((p) => p.jersey).toList());
 
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       timerSeconds++;
-      for (final p in players) {
+      for (final p in activePlayers) {
         if (playerVisible[p.jersey] == true) {
           stats[p.jersey]?.gameTimeSeconds++;
         }
       }
       notifyListeners();
     });
+
+    notifyListeners();
+  }
+
+  /// MANUAL OVERRIDE — permanently stop tracking this player for the
+  /// rest of the session (e.g. injury, they're done playing). This is
+  /// different from the normal automatic on/off-court behaviour —
+  /// once removed here, they will NOT be auto-detected again even if
+  /// they reappear on camera.
+  void removePlayerPermanently(String jersey) {
+    activePlayers.removeWhere((p) => p.jersey == jersey);
+    _cameraService.removePlayerPermanently(jersey);
+
+    playerVisible[jersey] = false;
+    playerLocked[jersey]  = false;
+    skeletons[jersey]     = [];
+    lockSource[jersey]    = '';
+    _playerLostTimers[jersey]?.cancel();
+
+    if (activePlayers.isEmpty) {
+      selectedPlayerIndex = 0;
+    } else if (selectedPlayerIndex >= activePlayers.length) {
+      selectedPlayerIndex = activePlayers.length - 1;
+    }
 
     notifyListeners();
   }
@@ -157,7 +256,8 @@ class TrackingViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  PlayerConfig get selectedPlayer => players[selectedPlayerIndex];
+  PlayerConfig? get selectedPlayer =>
+      activePlayers.isEmpty ? null : activePlayers[selectedPlayerIndex];
 
   Future<List<PlayerStats>> endSession() async {
     _sessionTimer?.cancel();
@@ -167,7 +267,7 @@ class TrackingViewModel extends ChangeNotifier {
     }
     await _cameraService.stopCamera();
 
-    final results = players.map((p) => stats[p.jersey]!).toList();
+    final results = jerseysThatPlayed.map((j) => stats[j]!).toList();
 
     for (final s in results) {
       final db = await _db.database;
