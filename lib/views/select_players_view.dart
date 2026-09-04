@@ -15,23 +15,33 @@ class SelectPlayersView extends StatefulWidget {
 
 class _SelectPlayersViewState extends State<SelectPlayersView> {
   final Set<int> _selectedIndices = {};
+  static const int _maxActive = 6;
 
   void _togglePlayer(int index) {
     setState(() {
       if (_selectedIndices.contains(index)) {
         _selectedIndices.remove(index);
       } else {
-        if (_selectedIndices.length < 3) {
+        if (_selectedIndices.length < _maxActive) {
           _selectedIndices.add(index);
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Maximum 3 players can be tracked at once')),
+            SnackBar(
+                content: Text(
+                    'Maximum $_maxActive players can be tracked at once — you can substitute others in during the session')),
           );
         }
       }
     });
   }
+
+  PlayerConfig _toConfig(dynamic player) => PlayerConfig(
+        jersey:         player.jersey,
+        name:           player.name,
+        color:          PlayerColors.colorForJersey(player.jersey),
+        photoPaths:     player.photoPaths,
+        detectedColors: player.colors,
+      );
 
   void _startSession() {
     if (_selectedIndices.isEmpty) {
@@ -41,23 +51,24 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
       return;
     }
 
-    final selectedPlayers = _selectedIndices.toList()..sort();
+    final selectedOrdered = _selectedIndices.toList()..sort();
 
-    final players = selectedPlayers.asMap().entries.map((entry) {
-      final player = widget.team.players[entry.value];
-      return PlayerConfig(
-        jersey:         player.jersey,
-        name:           player.name,
-        color:          PlayerColors.palette[entry.key],
-        photoPaths:     player.photoPaths,
-        detectedColors: player.colors,
-      );
-    }).toList();
+    final initialPlayers = selectedOrdered
+        .map((i) => _toConfig(widget.team.players[i]))
+        .toList();
+
+    // Full roster — every registered player, used as the pool of
+    // substitution candidates during the session
+    final fullRoster =
+        widget.team.players.map((p) => _toConfig(p)).toList();
 
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => TrackingView(players: players),
+        builder: (_) => TrackingView(
+          initialPlayers: initialPlayers,
+          fullRoster: fullRoster,
+        ),
       ),
     );
   }
@@ -91,7 +102,7 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Select up to 3 players to track in this session',
+                    'Select up to $_maxActive players to start with — you can substitute others in later',
                     style: GoogleFonts.inter(
                         fontSize: 12, color: VTColors.textDim),
                   ),
@@ -106,7 +117,7 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                         color: VTColors.blockCyan.withValues(alpha: 0.3)),
                   ),
                   child: Text(
-                    '${_selectedIndices.length}/3',
+                    '${_selectedIndices.length}/$_maxActive',
                     style: GoogleFonts.bebasNeue(
                         fontSize: 16, color: VTColors.blockCyan),
                   ),
@@ -121,10 +132,7 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
               itemBuilder: (_, i) {
                 final player = widget.team.players[i];
                 final selected = _selectedIndices.contains(i);
-                final slotIndex = _selectedIndices.toList()..sort();
-                final slot = slotIndex.indexOf(i);
-                final color =
-                    selected ? PlayerColors.palette[slot] : VTColors.textDim;
+                final color = PlayerColors.colorForJersey(player.jersey);
 
                 return GestureDetector(
                   onTap: () => _togglePlayer(i),
@@ -161,19 +169,13 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                           ),
                           child: Center(
                             child: selected
-                                ? Text(
-                                    '${slot + 1}',
-                                    style: GoogleFonts.bebasNeue(
-                                        fontSize: 16, color: Colors.black),
-                                  )
+                                ? const Icon(Icons.check,
+                                    color: Colors.black, size: 16)
                                 : const Icon(Icons.add,
                                     color: VTColors.textDim, size: 16),
                           ),
                         ),
                         const SizedBox(width: 14),
-
-                        // Jersey badge — shows detected colour as a
-                        // small dot if available
                         Container(
                           width: 44,
                           height: 44,
@@ -197,9 +199,7 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                             ),
                           ),
                         ),
-
                         const SizedBox(width: 12),
-
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -236,7 +236,6 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                                           : VTColors.spikeGold,
                                     ),
                                   ),
-                                  // Colour swatch indicator
                                   if (player.colors != null) ...[
                                     const SizedBox(width: 8),
                                     Container(
@@ -249,11 +248,6 @@ class _SelectPlayersViewState extends State<SelectPlayersView> {
                                                 .withValues(alpha: 0.3)),
                                       ),
                                     ),
-                                    const SizedBox(width: 3),
-                                    Text('colour set',
-                                        style: GoogleFonts.inter(
-                                            fontSize: 10,
-                                            color: VTColors.textDim)),
                                   ],
                                 ],
                               ),

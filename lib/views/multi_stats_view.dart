@@ -4,7 +4,7 @@ import 'package:share_plus/share_plus.dart';
 import '../models/game_event.dart';
 import '../models/player_config.dart';
 import '../theme.dart';
-import 'setup_view.dart';
+import 'home_view.dart';
 
 class MultiStatsView extends StatefulWidget {
   final List<PlayerStats> playerStats;
@@ -57,7 +57,9 @@ class _MultiStatsViewState extends State<MultiStatsView> {
                 const SizedBox(height: 16),
 
                 // Page indicator tabs
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: widget.players.asMap().entries.map((entry) {
                     final i = entry.key;
                     final p = entry.value;
@@ -70,7 +72,6 @@ class _MultiStatsViewState extends State<MultiStatsView> {
                       },
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 200),
-                        margin: const EdgeInsets.only(right: 8),
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                         decoration: BoxDecoration(
                           color: isActive ? p.color.withValues(alpha: 0.2) : VTColors.surface,
@@ -98,16 +99,20 @@ class _MultiStatsViewState extends State<MultiStatsView> {
 
           // Swipeable player stats
           Expanded(
-            child: PageView(
-              controller: _pageController,
-              onPageChanged: (i) => setState(() => _currentPage = i),
-              children: widget.players.asMap().entries.map((entry) {
-                final i = entry.key;
-                final p = entry.value;
-                final s = widget.playerStats[i];
-                return _PlayerStatsPage(player: p, stats: s);
-              }).toList(),
-            ),
+            child: widget.players.isEmpty
+                ? Center(
+                    child: Text('No player data recorded this session',
+                      style: GoogleFonts.inter(color: VTColors.textDim, fontSize: 13)))
+                : PageView(
+                    controller: _pageController,
+                    onPageChanged: (i) => setState(() => _currentPage = i),
+                    children: widget.players.asMap().entries.map((entry) {
+                      final i = entry.key;
+                      final p = entry.value;
+                      final s = widget.playerStats[i];
+                      return _PlayerStatsPage(player: p, stats: s);
+                    }).toList(),
+                  ),
           ),
 
           // Bottom actions
@@ -135,7 +140,7 @@ class _MultiStatsViewState extends State<MultiStatsView> {
                   child: ElevatedButton(
                     onPressed: () => Navigator.pushAndRemoveUntil(
                       context,
-                      MaterialPageRoute(builder: (_) => const SetupView()),
+                      MaterialPageRoute(builder: (_) => const HomeView()),
                       (_) => false,
                     ),
                     style: ElevatedButton.styleFrom(
@@ -145,8 +150,7 @@ class _MultiStatsViewState extends State<MultiStatsView> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       elevation: 0,
                     ),
-                    child: Text('NEW SESSION',
-                      style: GoogleFonts.bebasNeue(fontSize: 18, letterSpacing: 2, color: Colors.black)),
+                    child: Text('DONE', style: GoogleFonts.bebasNeue(fontSize: 18, letterSpacing: 2, color: Colors.black)),
                   ),
                 ),
               ],
@@ -163,7 +167,7 @@ class _MultiStatsViewState extends State<MultiStatsView> {
       final p = widget.players[i];
       final s = widget.playerStats[i];
       buffer.writeln('#${p.jersey} ${s.name}');
-      buffer.writeln('Time: ${s.formattedTime} | Hits: ${s.hits} | Blocks: ${s.blocks} | Pt%: ${s.pointPercentage}%');
+      buffer.writeln('Time: ${s.formattedTime} | Hits: ${s.hits} | Blocks: ${s.blocks} | Pt%: ${s.pointPercentage.round()}%');
       buffer.writeln();
     }
     Share.share(buffer.toString());
@@ -210,7 +214,6 @@ class _PlayerStatsPageState extends State<_PlayerStatsPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Player header
           Row(children: [
             Container(
               width: 10, height: 10,
@@ -230,7 +233,6 @@ class _PlayerStatsPageState extends State<_PlayerStatsPage>
 
           const SizedBox(height: 16),
 
-          // Stat cards
           GridView.count(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
@@ -239,16 +241,15 @@ class _PlayerStatsPageState extends State<_PlayerStatsPage>
             mainAxisSpacing: 10,
             childAspectRatio: 1.4,
             children: [
-              _StatCard(label: 'Hits',    value: '${s.hits}',   sub: s.hits == 0 ? 'No attacks' : '${(s.hits / (s.gameTimeSeconds / 60)).toStringAsFixed(1)}/min', color: VTColors.spikeGold, accent: p.color),
+              _StatCard(label: 'Hits',    value: '${s.hits}',   sub: s.hits == 0 ? 'No attacks' : (s.gameTimeSeconds > 0 ? '${(s.hits / (s.gameTimeSeconds / 60)).toStringAsFixed(1)}/min' : '—'), color: VTColors.spikeGold, accent: p.color),
               _StatCard(label: 'Blocks',  value: '${s.blocks}', sub: s.blocks == 0 ? 'No blocks' : '${s.blocks} stops', color: VTColors.blockCyan, accent: p.color),
-              _StatCard(label: 'Point %', value: '${s.pointPercentage}%', sub: '${s.points} scored', color: VTColors.pointGreen, accent: p.color),
+              _StatCard(label: 'Point %', value: '${s.pointPercentage.round()}%', sub: '${s.points} scored', color: VTColors.pointGreen, accent: p.color),
               _StatCard(label: 'Time',    value: s.formattedTime, sub: 'On court', color: VTColors.netWhite, accent: p.color, smallValue: true),
             ],
           ),
 
           const SizedBox(height: 16),
 
-          // Performance bars
           Text('PERFORMANCE', style: GoogleFonts.bebasNeue(fontSize: 14, letterSpacing: 2, color: VTColors.textDim)),
           const SizedBox(height: 10),
           Container(
@@ -269,7 +270,6 @@ class _PlayerStatsPageState extends State<_PlayerStatsPage>
 
           const SizedBox(height: 16),
 
-          // Event timeline
           if (s.events.isNotEmpty) ...[
             Text('EVENTS', style: GoogleFonts.bebasNeue(fontSize: 14, letterSpacing: 2, color: VTColors.textDim)),
             const SizedBox(height: 10),
