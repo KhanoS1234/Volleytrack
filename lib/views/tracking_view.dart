@@ -150,9 +150,10 @@ class _TrackingViewState extends State<TrackingView>
                 // HUD top bar
                 _buildHUD(),
 
-                // Jersey sensitivity slider — DEVELOPMENT ONLY
-                // Remove once optimal value is found and hardcoded
-                _buildSensitivitySlider(),
+                // Jersey sensitivity tuning icon — DEVELOPMENT ONLY.
+                // Tap to open sliders in a popup instead of always
+                // showing them, keeping the camera view uncluttered.
+                _buildTuningIcon(),
 
                 // Event flash
                 if (_vm.showFlash) _buildFlash(),
@@ -304,7 +305,26 @@ class _TrackingViewState extends State<TrackingView>
                 style: GoogleFonts.inter(color: VTColors.textDim))),
       );
     }
-    return CameraPreview(_vm.cameraController!);
+    // Use FittedBox with BoxFit.cover so the camera feed fills the
+    // available space at its TRUE aspect ratio (no stretching), cropping
+    // any excess rather than distorting the image — this matters most
+    // in landscape where the mismatch between camera and screen ratio
+    // is more pronounced.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final controller = _vm.cameraController!;
+        return ClipRect(
+          child: FittedBox(
+            fit: BoxFit.cover,
+            child: SizedBox(
+              width: constraints.maxWidth,
+              height: constraints.maxWidth / controller.value.aspectRatio,
+              child: CameraPreview(controller),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Widget _buildPlayerBox(PlayerConfig p) {
@@ -459,142 +479,185 @@ class _TrackingViewState extends State<TrackingView>
     );
   }
 
-  /// Live jersey number recognition tuning sliders.
-  /// DEVELOPMENT ONLY — remove once optimal values are found and hardcoded.
-  Widget _buildSensitivitySlider() {
-    final settings = DetectionSettings();
-
+  /// Small toggle icon — tap to open the jersey recognition tuning
+  /// sliders in a popup dialog. DEVELOPMENT ONLY — remove once optimal
+  /// values are found and hardcoded.
+  Widget _buildTuningIcon() {
     return Positioned(
-      left: 16,
       right: 16,
-      bottom: 8,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.65),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: VTColors.spikeGold.withValues(alpha: 0.3)),
-        ),
-        child: StatefulBuilder(
-          builder: (context, setSliderState) {
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // DEBUG — proves the live value the detection loop is
-                // actually reading right now. Remove once confirmed working.
-                Container(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    'LIVE: minWidth=${settings.minDetectionWidth.toStringAsFixed(1)}px  '
-                    'confirmFrames=${settings.confirmationFrames}',
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 9,
-                      color: VTColors.pointGreen,
-                    ),
-                  ),
-                ),
-
-                // Slider 1 — distance sensitivity
-                Row(
-                  children: [
-                    const Icon(Icons.tune, color: VTColors.spikeGold, size: 16),
-                    const SizedBox(width: 8),
-                    Text('Jersey Sensitivity',
-                        style: GoogleFonts.inter(
-                            fontSize: 11, color: VTColors.textDim)),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderThemeData(
-                          trackHeight: 3,
-                          thumbShape:
-                              const RoundSliderThumbShape(enabledThumbRadius: 7),
-                          activeTrackColor: VTColors.spikeGold,
-                          inactiveTrackColor: VTColors.surface2,
-                          thumbColor: VTColors.spikeGold,
-                        ),
-                        child: Slider(
-                          value: settings.minDetectionWidth,
-                          min: DetectionSettings.minWidthAllowed,
-                          max: DetectionSettings.maxWidthAllowed,
-                          onChanged: (v) {
-                            settings.setMinDetectionWidth(v);
-                            setSliderState(() {});
-                          },
-                        ),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 46,
-                      child: Text(
-                        settings.minDetectionWidth < 12
-                            ? 'FAR'
-                            : settings.minDetectionWidth > 25
-                                ? 'CLOSE'
-                                : 'MID',
-                        textAlign: TextAlign.right,
-                        style: GoogleFonts.bebasNeue(
-                          fontSize: 14,
-                          letterSpacing: 1,
-                          color: VTColors.spikeGold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-
-                // Slider 2 — lock confidence (false positive prevention)
-                Row(
-                  children: [
-                    const Icon(Icons.verified_outlined,
-                        color: VTColors.blockCyan, size: 16),
-                    const SizedBox(width: 8),
-                    Text('Lock Confidence',
-                        style: GoogleFonts.inter(
-                            fontSize: 11, color: VTColors.textDim)),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderThemeData(
-                          trackHeight: 3,
-                          thumbShape:
-                              const RoundSliderThumbShape(enabledThumbRadius: 7),
-                          activeTrackColor: VTColors.blockCyan,
-                          inactiveTrackColor: VTColors.surface2,
-                          thumbColor: VTColors.blockCyan,
-                        ),
-                        child: Slider(
-                          value: settings.confirmationFrames.toDouble(),
-                          min: DetectionSettings.minConfirmationAllowed
-                              .toDouble(),
-                          max: DetectionSettings.maxConfirmationAllowed
-                              .toDouble(),
-                          divisions: DetectionSettings.maxConfirmationAllowed -
-                              DetectionSettings.minConfirmationAllowed,
-                          onChanged: (v) {
-                            settings.setConfirmationFrames(v.round());
-                            setSliderState(() {});
-                          },
-                        ),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 46,
-                      child: Text(
-                        '${settings.confirmationFrames}x',
-                        textAlign: TextAlign.right,
-                        style: GoogleFonts.bebasNeue(
-                          fontSize: 14,
-                          letterSpacing: 1,
-                          color: VTColors.blockCyan,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            );
-          },
+      bottom: 16,
+      child: GestureDetector(
+        onTap: _openTuningDialog,
+        child: Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.6),
+            shape: BoxShape.circle,
+            border: Border.all(color: VTColors.spikeGold.withValues(alpha: 0.5)),
+          ),
+          child: const Icon(Icons.tune, color: VTColors.spikeGold, size: 20),
         ),
       ),
+    );
+  }
+
+  void _openTuningDialog() {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: VTColors.courtBlue,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: VTColors.spikeGold.withValues(alpha: 0.3)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: StatefulBuilder(
+              builder: (context, setDialogState) {
+                final settings = DetectionSettings();
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.tune, color: VTColors.spikeGold, size: 18),
+                        const SizedBox(width: 8),
+                        Text('DETECTION TUNING',
+                            style: GoogleFonts.bebasNeue(
+                                fontSize: 16,
+                                letterSpacing: 2,
+                                color: VTColors.spikeGold)),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close,
+                              color: VTColors.textDim, size: 20),
+                          onPressed: () => Navigator.pop(dialogContext),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Live readout
+                    Text(
+                      'LIVE: minWidth=${settings.minDetectionWidth.toStringAsFixed(1)}px  '
+                      'confirmFrames=${settings.confirmationFrames}',
+                      style: GoogleFonts.jetBrainsMono(
+                          fontSize: 10, color: VTColors.pointGreen),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Slider 1 — distance sensitivity
+                    Row(
+                      children: [
+                        const Icon(Icons.tune,
+                            color: VTColors.spikeGold, size: 16),
+                        const SizedBox(width: 8),
+                        Text('Jersey Sensitivity',
+                            style: GoogleFonts.inter(
+                                fontSize: 11, color: VTColors.textDim)),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderThemeData(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 7),
+                              activeTrackColor: VTColors.spikeGold,
+                              inactiveTrackColor: VTColors.surface2,
+                              thumbColor: VTColors.spikeGold,
+                            ),
+                            child: Slider(
+                              value: settings.minDetectionWidth,
+                              min: DetectionSettings.minWidthAllowed,
+                              max: DetectionSettings.maxWidthAllowed,
+                              onChanged: (v) {
+                                settings.setMinDetectionWidth(v);
+                                setDialogState(() {});
+                                setState(() {});
+                              },
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 46,
+                          child: Text(
+                            settings.minDetectionWidth < 12
+                                ? 'FAR'
+                                : settings.minDetectionWidth > 25
+                                    ? 'CLOSE'
+                                    : 'MID',
+                            textAlign: TextAlign.right,
+                            style: GoogleFonts.bebasNeue(
+                              fontSize: 14,
+                              letterSpacing: 1,
+                              color: VTColors.spikeGold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // Slider 2 — lock confidence
+                    Row(
+                      children: [
+                        const Icon(Icons.verified_outlined,
+                            color: VTColors.blockCyan, size: 16),
+                        const SizedBox(width: 8),
+                        Text('Lock Confidence',
+                            style: GoogleFonts.inter(
+                                fontSize: 11, color: VTColors.textDim)),
+                        Expanded(
+                          child: SliderTheme(
+                            data: SliderThemeData(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 7),
+                              activeTrackColor: VTColors.blockCyan,
+                              inactiveTrackColor: VTColors.surface2,
+                              thumbColor: VTColors.blockCyan,
+                            ),
+                            child: Slider(
+                              value: settings.confirmationFrames.toDouble(),
+                              min: DetectionSettings.minConfirmationAllowed
+                                  .toDouble(),
+                              max: DetectionSettings.maxConfirmationAllowed
+                                  .toDouble(),
+                              divisions:
+                                  DetectionSettings.maxConfirmationAllowed -
+                                      DetectionSettings.minConfirmationAllowed,
+                              onChanged: (v) {
+                                settings.setConfirmationFrames(v.round());
+                                setDialogState(() {});
+                                setState(() {});
+                              },
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 46,
+                          child: Text(
+                            '${settings.confirmationFrames}x',
+                            textAlign: TextAlign.right,
+                            style: GoogleFonts.bebasNeue(
+                              fontSize: 14,
+                              letterSpacing: 1,
+                              color: VTColors.blockCyan,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 
