@@ -30,11 +30,13 @@ class _TrackingViewState extends State<TrackingView>
   void initState() {
     super.initState();
 
-    // Tracking captures more of the court in landscape — switch
-    // orientation for this screen only, restore on exit
+    // Tracking captures more of the court in landscape. We lock to a
+    // SINGLE landscape direction (matching the camera's own capture
+    // orientation lock in CameraService) rather than allowing both —
+    // allowing both let iOS pick inconsistently, which was flipping
+    // the preview upside down.
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
     ]);
 
     _vm = TrackingViewModel(players: widget.players);

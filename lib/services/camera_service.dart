@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show DeviceOrientation;
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'dart:ui' show Rect, Size, Offset;
@@ -151,6 +152,13 @@ class CameraService {
     await controller!.initialize();
     await controller!.setFocusMode(FocusMode.auto);
     await controller!.setExposureMode(ExposureMode.auto);
+
+    // Explicitly lock the camera's capture orientation to match the
+    // app's locked landscape orientation. Without this, iOS can pick
+    // either landscape direction inconsistently, which flips the
+    // preview upside down relative to what the sensor actually sees.
+    await controller!.lockCaptureOrientation(DeviceOrientation.landscapeLeft);
+
     await controller!.startImageStream(_processFrame);
   }
 
