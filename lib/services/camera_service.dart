@@ -56,10 +56,22 @@ class CameraService {
   // checks the player's own known box region, not the whole frame.
   static const int _appearanceCheckEveryNFrames = 18; // ~2x per second at 30fps
 
-  // If two players' boxes overlap by more than this fraction, treat it as
-  // a "crossing" event — freeze position updates until they separate.
+  // How much a NEW lock candidate's box can overlap with an ALREADY
+  // locked player's box before we reject the new lock. Prevents two
+  // different jerseys from both claiming the same physical player.
+  static const double _newLockOccupancyThreshold = 0.30; // 30% overlap
+
+  // If two ALREADY-locked players' boxes overlap by more than this
+  // fraction, treat it as a "crossing" event — freeze position updates
+  // for both until they separate. Brief and expected during normal play.
   static const double _proximityOverlapThreshold = 0.15; // 15% overlap
-  // ─────────────────────────────────────────────────────────────────────────
+
+  // Watchdog: if two already-locked players stay overlapping above this
+  // fraction for this many consecutive frames, we assume they've become
+  // double-locked onto the same person (slipped past the initial check)
+  // and drop the more recently locked one to force re-acquisition.
+  static const double _sustainedOverlapThreshold = 0.60; // 60% overlap
+  static const int _sustainedOverlapFrames = 60; // ~2 seconds at 30fps
 
   final Map<String, int>     _consecutiveDetections = {};
   final Map<String, Rect?>   _lastKnownBoxes        = {};
@@ -72,6 +84,15 @@ class CameraService {
   // Re-identification state
   final Map<String, bool> _isFrozen = {}; // true during a proximity crossing
   final Map<String, int>  _framesSinceAppearanceCheck = {};
+
+  // When each player was most recently locked — used by the sustained
+  // overlap watchdog to determine which of two double-locked players
+  // is "newer" and should be dropped
+  final Map<String, DateTime> _lockedAtTime = {};
+
+  // Tracks consecutive frames each PAIR of players has been overlapping
+  // above the sustained-overlap threshold, keyed as "jerseyA|jerseyB"
+  final Map<String, int> _sustainedOverlapCounters = {};
 
   Function(String jersey, Rect boundingBox, String source)? onPlayerDetected;
   Function(String jersey)?                                  onPlayerLost;
@@ -110,6 +131,7 @@ class CameraService {
       _lockSource[jersey]                    = '';
       _isFrozen[jersey]                      = false;
       _framesSinceAppearanceCheck[jersey]    = 0;
+      _lockedAtTime.remove(jersey);
     }
 
     if (_cameras.isEmpty) await initialise();
@@ -151,6 +173,11 @@ class CameraService {
       // 1. Check for proximity crossings BEFORE updating positions —
       //    this determines whether we should freeze this frame
       _checkProximityCrossings();
+
+      // 1b. Watchdog — catch cases where two players ended up double-
+      // locked onto the same person despite the occupancy check at
+      // lock-time (e.g. if their positions drifted together afterwards)
+      _checkSustainedOverlapWatchdog();
 
       // 2. Pose detection every frame
       final poses = await _poseDetector.processImage(inputImage);
@@ -213,6 +240,69 @@ class CameraService {
       // Continue silently
     } finally {
       _isProcessing = false;
+    }
+  }
+
+  /// Watchdog — detects when two already-locked players have been
+  /// heavily overlapping (much more than a normal brief crossing) for
+  /// several consecutive seconds. This catches double-locks that slip
+  /// past the initial occupancy check, for example if both players'
+  /// boxes drift together over time via skeleton tracking. When found,
+  /// the more recently locked jersey is dropped so it can re-acquire
+  /// correctly elsewhere.
+  void _checkSustainedOverlapWatchdog() {
+    final lockedJerseys = _targetJerseys
+        .where((j) => _playerLockedPermanent[j] == true)
+        .toList();
+
+    // Track which pairs are currently overlapping heavily this frame
+    final Set<String> activePairs = {};
+
+    for (int i = 0; i < lockedJerseys.length; i++) {
+      for (int j = i + 1; j < lockedJerseys.length; j++) {
+        final jerseyA = lockedJerseys[i];
+        final jerseyB = lockedJerseys[j];
+        final boxA = _lastKnownBoxes[jerseyA];
+        final boxB = _lastKnownBoxes[jerseyB];
+        if (boxA == null || boxB == null) continue;
+
+        final overlap = _overlapFraction(boxA, boxB);
+        final pairKey = '$jerseyA|$jerseyB';
+
+        if (overlap > _sustainedOverlapThreshold) {
+          activePairs.add(pairKey);
+          _sustainedOverlapCounters[pairKey] =
+              (_sustainedOverlapCounters[pairKey] ?? 0) + 1;
+
+          if ((_sustainedOverlapCounters[pairKey] ?? 0) >= _sustainedOverlapFrames) {
+            // Sustained double-lock detected — drop whichever jersey
+            // was locked more recently, keep the more established one
+            final lockedAtA = _lockedAtTime[jerseyA];
+            final lockedAtB = _lockedAtTime[jerseyB];
+
+            String toDrop;
+            if (lockedAtA == null) {
+              toDrop = jerseyA;
+            } else if (lockedAtB == null) {
+              toDrop = jerseyB;
+            } else {
+              toDrop = lockedAtA.isAfter(lockedAtB) ? jerseyA : jerseyB;
+            }
+
+            _resetPlayerLock(toDrop);
+            onPlayerLost?.call(toDrop);
+            _sustainedOverlapCounters[pairKey] = 0;
+          }
+        }
+      }
+    }
+
+    // Reset counters for pairs no longer overlapping heavily this frame
+    final staleKeys = _sustainedOverlapCounters.keys
+        .where((k) => !activePairs.contains(k))
+        .toList();
+    for (final key in staleKeys) {
+      _sustainedOverlapCounters[key] = 0;
     }
   }
 
@@ -305,6 +395,7 @@ class CameraService {
     _lockSource[jersey]                 = '';
     _isFrozen[jersey]                   = false;
     _framesSinceAppearanceCheck[jersey] = 0;
+    _lockedAtTime.remove(jersey);
   }
 
   void _tryLockPlayer(String jersey, Rect detectedBox, String source) {
@@ -341,6 +432,17 @@ class CameraService {
         _relockCandidateCount[jersey] =
             (_relockCandidateCount[jersey] ?? 0) + 1;
         if ((_relockCandidateCount[jersey] ?? 0) >= _relockConfirmationFrames) {
+          // OCCUPANCY CHECK — before granting this new lock, make sure
+          // the candidate position isn't already claimed by a different
+          // locked player. This is what stops two jerseys from both
+          // locking onto the same physical person.
+          if (_isPositionOccupiedByOther(jersey, detectedBox)) {
+            // Reset candidate tracking — don't lock here, keep searching
+            _relockCandidateCount[jersey] = 0;
+            _relockCandidatePos[jersey]   = null;
+            return;
+          }
+
           _lastKnownBoxes[jersey]        = detectedBox;
           _playerLockedPermanent[jersey] = true;
           _consecutiveDetections[jersey] = 0;
@@ -348,6 +450,7 @@ class CameraService {
           _relockCandidatePos[jersey]    = null;
           _framesSinceDetection[jersey]  = 0;
           _lockSource[jersey]            = source;
+          _lockedAtTime[jersey]          = DateTime.now();
           onPlayerDetected?.call(jersey, detectedBox, source);
         }
       } else {
@@ -358,6 +461,23 @@ class CameraService {
       _relockCandidateCount[jersey] = 1;
       _relockCandidatePos[jersey]   = detectedCentre;
     }
+  }
+
+  /// Checks whether [candidateBox] significantly overlaps with any
+  /// OTHER player's current locked box. Used to block a new lock from
+  /// forming on top of an already-tracked person.
+  bool _isPositionOccupiedByOther(String jersey, Rect candidateBox) {
+    for (final other in _targetJerseys) {
+      if (other == jersey) continue;
+      if (_playerLockedPermanent[other] != true) continue;
+
+      final otherBox = _lastKnownBoxes[other];
+      if (otherBox == null) continue;
+
+      final overlap = _overlapFraction(candidateBox, otherBox);
+      if (overlap > _newLockOccupancyThreshold) return true;
+    }
+    return false;
   }
 
   void _assignPosesToPlayers(List<Pose> poses) {
@@ -630,6 +750,8 @@ class CameraService {
     _lockSource.clear();
     _isFrozen.clear();
     _framesSinceAppearanceCheck.clear();
+    _lockedAtTime.clear();
+    _sustainedOverlapCounters.clear();
     _frameCount   = 0;
     _isProcessing = false;
   }

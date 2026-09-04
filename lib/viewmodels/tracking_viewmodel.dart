@@ -96,6 +96,7 @@ class TrackingViewModel extends ChangeNotifier {
     _cameraService.onPlayerLost = (jersey) {
       playerVisible[jersey] = false;
       lockSource[jersey]    = '';
+      skeletons[jersey]     = []; // clear stale skeleton so it stops rendering
       notifyListeners();
     };
 

@@ -88,6 +88,8 @@ class _TrackingViewState extends State<TrackingView>
 
                 // Skeleton overlays for all players
                 ...widget.players.map((p) {
+                  final visible = _vm.playerVisible[p.jersey] ?? false;
+                  if (!visible) return const SizedBox.shrink();
                   final landmarks = _vm.skeletons[p.jersey] ?? [];
                   if (landmarks.isEmpty) return const SizedBox.shrink();
                   return CustomPaint(
