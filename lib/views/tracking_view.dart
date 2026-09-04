@@ -36,7 +36,7 @@ class _TrackingViewState extends State<TrackingView>
     // allowing both let iOS pick inconsistently, which was flipping
     // the preview upside down.
     SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
     ]);
 
     _vm = TrackingViewModel(players: widget.players);

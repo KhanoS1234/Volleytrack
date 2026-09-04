@@ -157,7 +157,7 @@ class CameraService {
     // app's locked landscape orientation. Without this, iOS can pick
     // either landscape direction inconsistently, which flips the
     // preview upside down relative to what the sensor actually sees.
-    await controller!.lockCaptureOrientation(DeviceOrientation.landscapeLeft);
+    await controller!.lockCaptureOrientation(DeviceOrientation.landscapeRight);
 
     await controller!.startImageStream(_processFrame);
   }
