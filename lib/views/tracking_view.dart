@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
@@ -28,6 +29,14 @@ class _TrackingViewState extends State<TrackingView>
   @override
   void initState() {
     super.initState();
+
+    // Tracking captures more of the court in landscape — switch
+    // orientation for this screen only, restore on exit
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+
     _vm = TrackingViewModel(players: widget.players);
     _scanController = AnimationController(
       vsync: this,
@@ -67,6 +76,10 @@ class _TrackingViewState extends State<TrackingView>
 
   @override
   void dispose() {
+    // Restore portrait for the rest of the app (setup, stats, etc.)
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
     _scanController.dispose();
     _vm.dispose();
     super.dispose();
