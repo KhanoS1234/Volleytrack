@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
+import 'dart:math' as math;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../theme.dart';
@@ -321,7 +322,13 @@ class _TrackingViewState extends State<TrackingView>
             child: SizedBox(
               width: constraints.maxWidth,
               height: constraints.maxWidth / controller.value.aspectRatio,
-              child: CameraPreview(controller),
+              // Rotate 180° — the camera plugin's orientation lock only
+              // affects saved photo/video metadata, not the live preview
+              // widget, so we correct the upside-down rendering directly.
+              child: Transform.rotate(
+                angle: math.pi,
+                child: CameraPreview(controller),
+              ),
             ),
           ),
         );
